@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::{check_path, AbsoluteSystemPath, AnchoredSystemPath, PathError, PathValidation};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct AnchoredSystemPathBuf(pub(crate) Utf8PathBuf);
 
 impl TryFrom<&str> for AnchoredSystemPathBuf {
@@ -91,11 +92,12 @@ impl AnchoredSystemPathBuf {
         self.0.pop()
     }
 
-    // Produces a path from start to end, which may include directory traversal
-    // tokens. Given that both parameters are absolute, we _should_ always be
-    // able to produce such a path. The exception is when crossing drive letters
-    // on Windows, where no such path is possible. Since a repository is
-    // expected to only reside on a single drive, this shouldn't be an issue.
+    /// Produces a path from start to end, which may include directory traversal
+    /// tokens. Given that both parameters are absolute, we _should_ always be
+    /// able to produce such a path. The exception is when crossing drive
+    /// letters on Windows, where no such path is possible. Since a
+    /// repository is expected to only reside on a single drive, this
+    /// shouldn't be an issue.
     pub fn relative_path_between(start: &AbsoluteSystemPath, end: &AbsoluteSystemPath) -> Self {
         // Filter the implicit "RootDir" component that exists for unix paths.
         // For windows paths, we may want an assertion that we aren't crossing drives
@@ -144,8 +146,8 @@ impl AnchoredSystemPathBuf {
         self.0.as_str()
     }
 
-    // Takes in a path, validates that it is anchored and constructs an
-    // `AnchoredSystemPathBuf` with no trailing slashes.
+    /// Takes in a path, validates that it is anchored and constructs an
+    /// `AnchoredSystemPathBuf` with no trailing slashes.
     pub fn from_system_path(path: &Path) -> Result<Self, PathError> {
         let path = path
             .to_str()
@@ -195,6 +197,10 @@ impl AnchoredSystemPathBuf {
 
     pub fn components(&self) -> Utf8Components {
         self.0.components()
+    }
+
+    pub fn join(&self, other: &AnchoredSystemPath) -> AnchoredSystemPathBuf {
+        Self(self.0.join(other))
     }
 }
 

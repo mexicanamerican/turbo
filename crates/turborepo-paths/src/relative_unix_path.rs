@@ -18,7 +18,7 @@ impl Display for RelativeUnixPath {
 }
 
 impl RelativeUnixPath {
-    pub fn new<'a, P: AsRef<str> + 'a>(value: P) -> Result<&'a Self, PathError> {
+    pub fn new<P: AsRef<str> + ?Sized>(value: &P) -> Result<&Self, PathError> {
         let path = value.as_ref();
         if path.starts_with('/') {
             return Err(PathError::NotRelative(path.to_string()));
@@ -44,8 +44,16 @@ impl RelativeUnixPath {
         }
     }
 
-    pub fn to_system_path(&self) -> AnchoredSystemPathBuf {
+    pub fn to_anchored_system_path_buf(&self) -> AnchoredSystemPathBuf {
         AnchoredSystemPathBuf(self.to_system_path_buf())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 
     pub fn to_owned(&self) -> RelativeUnixPathBuf {
@@ -76,11 +84,22 @@ impl RelativeUnixPath {
     pub fn extension(&self) -> Option<&str> {
         Utf8Path::new(&self.0).extension()
     }
+
+    pub fn join_component(&self, segment: &str) -> RelativeUnixPathBuf {
+        debug_assert!(!segment.contains('/'));
+        RelativeUnixPathBuf(format!("{}/{}", &self.0, segment))
+    }
 }
 
 impl AsRef<RelativeUnixPath> for RelativeUnixPath {
     fn as_ref(&self) -> &RelativeUnixPath {
         self
+    }
+}
+
+impl<'a> From<&'a RelativeUnixPath> for wax::CandidatePath<'a> {
+    fn from(path: &'a RelativeUnixPath) -> Self {
+        path.0.into()
     }
 }
 
@@ -90,7 +109,7 @@ mod test {
     use crate::AnchoredSystemPath;
 
     #[test]
-    fn test_to_system_path() {
+    fn test_to_anchored_system_path_buf() {
         let path = RelativeUnixPath::new("foo/bar/baz").unwrap();
         let expected = AnchoredSystemPath::new(if cfg!(windows) {
             // Unix path separators should be converted
@@ -100,6 +119,6 @@ mod test {
             "foo/bar/baz"
         })
         .unwrap();
-        assert_eq!(&*path.to_system_path(), expected);
+        assert_eq!(&*path.to_anchored_system_path_buf(), expected);
     }
 }

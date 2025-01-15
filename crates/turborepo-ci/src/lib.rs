@@ -1,13 +1,18 @@
 #![deny(clippy::all)]
 
+mod vendor_behavior;
 mod vendors;
 
 use std::{env, sync::OnceLock};
 
 use crate::vendors::get_vendors;
-pub use crate::vendors::Vendor;
+pub use crate::{
+    vendor_behavior::{GroupPrefixFn, VendorBehavior},
+    vendors::Vendor,
+};
 
 static IS_CI: OnceLock<bool> = OnceLock::new();
+static VENDOR: OnceLock<Option<&'static Vendor>> = OnceLock::new();
 
 const CI_ENV_VARS: &[&str] = [
     "BUILD_ID",
@@ -36,7 +41,23 @@ pub fn is_ci() -> bool {
 
 impl Vendor {
     // Returns info about a CI vendor
-    pub fn get_info() -> Option<&'static Vendor> {
+    pub fn infer() -> Option<&'static Vendor> {
+        *VENDOR.get_or_init(Self::infer_inner)
+    }
+
+    /// Gets user from CI environment variables
+    /// We return an empty String instead of None because
+    /// the Spaces API expects some sort of string in the user field.
+    pub fn get_user() -> String {
+        let vendor = Vendor::infer();
+
+        vendor
+            .and_then(|v| v.username_env_var)
+            .and_then(|v| env::var(v).ok())
+            .unwrap_or_default()
+    }
+
+    fn infer_inner() -> Option<&'static Vendor> {
         for env in get_vendors() {
             if let Some(eval_env) = &env.eval_env {
                 for (name, expected_value) in eval_env {
@@ -66,13 +87,16 @@ impl Vendor {
         None
     }
 
-    #[allow(dead_code)]
-    fn get_name() -> Option<&'static str> {
-        Self::get_info().map(|v| v.name)
+    pub fn get_name() -> Option<&'static str> {
+        Self::infer().map(|v| v.name)
+    }
+
+    pub fn is(name: &str) -> bool {
+        Self::infer().map_or(false, |v| v.name == name)
     }
 
     pub fn get_constant() -> Option<&'static str> {
-        Self::get_info().map(|v| v.constant)
+        Self::infer().map(|v| v.constant)
     }
 }
 
@@ -81,7 +105,6 @@ mod tests {
     use tracing::info;
 
     use super::*;
-    use crate::Vendor;
 
     fn get_vendor(name: &str) -> Vendor {
         for v in get_vendors() {
@@ -170,7 +193,7 @@ mod tests {
                 env::set_var(key, val);
             }
 
-            assert_eq!(Vendor::get_info(), want.as_ref());
+            assert_eq!(Vendor::infer_inner(), want.as_ref());
 
             if Vendor::get_name() == Some("GitHub Actions") {
                 if let Some(live_ci) = live_ci {

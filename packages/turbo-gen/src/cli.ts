@@ -1,17 +1,15 @@
 #!/usr/bin/env node
 
-import chalk from "chalk";
+import http from "node:http";
+import https from "node:https";
+import { bold } from "picocolors";
 import { Argument, Command, Option } from "commander";
-import notifyUpdate from "./utils/notifyUpdate";
 import { logger } from "@turbo/utils";
-
-import { workspace, run, raw } from "./commands";
-import cliPkg from "../package.json";
-import { GeneratorError } from "./utils/error";
-
 import { ProxyAgent } from "proxy-agent";
-import http from "http";
-import https from "https";
+import cliPkg from "../package.json";
+import { notifyUpdate } from "./utils/notifyUpdate";
+import { workspace, run, raw } from "./commands";
+import { GeneratorError } from "./utils/error";
 
 // Support http proxy vars
 const agent = new ProxyAgent();
@@ -21,7 +19,7 @@ https.globalAgent = agent;
 const turboGenCli = new Command();
 
 turboGenCli
-  .name(chalk.bold(logger.turboGradient("@turbo/gen")))
+  .name(bold(logger.turboGradient("@turbo/gen")))
   .description("Extend your Turborepo")
   .version(cliPkg.version, "-v, --version", "Output the current version")
   .helpOption("-h, --help", "Display help for command")
@@ -120,14 +118,14 @@ turboGenCli
   .parseAsync()
   .then(notifyUpdate)
   .catch(async (error) => {
-    console.log();
+    logger.log();
     if (error instanceof GeneratorError) {
       logger.error(error.message);
     } else {
       logger.error("Unexpected error. Please report it as a bug:");
-      console.log(error.message);
+      logger.log(error);
     }
-    console.log();
+    logger.log();
     await notifyUpdate();
     process.exit(1);
   });

@@ -1,13 +1,13 @@
+import path from "node:path";
 import inquirer from "inquirer";
-import path from "path";
+import { bold, dim, italic, underline } from "picocolors";
 import { Logger } from "../../logger";
-import chalk from "chalk";
-import { SummaryCommandArgument } from "./types";
 import { directoryInfo } from "../../utils";
-import getWorkspaceDetails from "../../getWorkspaceDetails";
-import { Workspace } from "../../types";
+import { getWorkspaceDetails } from "../../getWorkspaceDetails";
+import type { Workspace } from "../../types";
+import type { SummaryCommandArgument } from "./types";
 
-export default async function summary(directory: SummaryCommandArgument) {
+export async function summaryCommand(directory: SummaryCommandArgument) {
   const logger = new Logger();
   logger.hero();
 
@@ -19,23 +19,22 @@ export default async function summary(directory: SummaryCommandArgument) {
     message: "Where is the root of the repo?",
     when: !directory,
     default: ".",
-    validate: (directory: string) => {
-      const { exists, absolute } = directoryInfo({ directory });
+    validate: (d: string) => {
+      const { exists, absolute } = directoryInfo({ directory: d });
       if (exists) {
         return true;
-      } else {
-        return `Directory ${chalk.dim(`(${absolute})`)} does not exist`;
       }
+      return `Directory ${dim(`(${absolute})`)} does not exist`;
     },
-    filter: (directory: string) => directory.trim(),
+    filter: (d: string) => d.trim(),
   });
 
-  const { directoryInput: selectedDirectory = directory as string } = answer;
+  const { directoryInput: selectedDirectory = directory } = answer;
   const { exists, absolute: root } = directoryInfo({
     directory: selectedDirectory,
   });
   if (!exists) {
-    console.error(`Directory ${chalk.dim(`(${root})`)} does not exist`);
+    logger.error(`Directory ${dim(`(${root})`)} does not exist`);
     return process.exit(1);
   }
 
@@ -48,28 +47,26 @@ export default async function summary(directory: SummaryCommandArgument) {
   project.workspaceData.workspaces.forEach((workspace) => {
     const workspacePath = path.relative(root, workspace.paths.root);
     const rootDirectory = workspacePath.split(path.sep)[0];
-    if (!workspacesByDirectory[rootDirectory]) {
+    if (!(rootDirectory in workspacesByDirectory)) {
       workspacesByDirectory[rootDirectory] = [];
     }
     workspacesByDirectory[rootDirectory].push(workspace);
   });
 
   const renderWorkspace = (w: Workspace) => {
-    return `${w.name} (${chalk.italic(
-      `./${path.relative(root, w.paths.root)}`
-    )})`;
+    return `${w.name} (${italic(`./${path.relative(root, w.paths.root)}`)})`;
   };
 
   const renderDirectory = ({
     number,
-    directory,
+    dir,
     workspaces,
   }: {
     number: number;
-    directory: string;
+    dir: string;
     workspaces: Array<Workspace>;
   }) => {
-    logger.indented(2, `${number}. ${chalk.bold(directory)}`);
+    logger.indented(2, `${number}. ${bold(dir)}`);
     workspaces.forEach((workspace, idx) => {
       logger.indented(3, `${idx + 1}. ${renderWorkspace(workspace)}`);
     });
@@ -77,20 +74,20 @@ export default async function summary(directory: SummaryCommandArgument) {
 
   // repo header
   logger.header(`Repository Summary`);
-  logger.indented(1, `${chalk.underline(project.name)}:`);
+  logger.indented(1, `${underline(project.name)}:`);
   // workspace manager header
   logger.indented(
     1,
-    `Package Manager: ${chalk.bold(chalk.italic(project.packageManager))}`
+    `Package Manager: ${bold(italic(project.packageManager))}`
   );
   if (hasWorkspaces) {
     // workspaces header
-    logger.indented(1, `Workspaces (${chalk.bold(numWorkspaces.toString())}):`);
-    Object.keys(workspacesByDirectory).forEach((directory, idx) => {
+    logger.indented(1, `Workspaces (${bold(numWorkspaces.toString())}):`);
+    Object.keys(workspacesByDirectory).forEach((dir, idx) => {
       renderDirectory({
         number: idx + 1,
-        directory,
-        workspaces: workspacesByDirectory[directory],
+        workspaces: workspacesByDirectory[dir],
+        dir,
       });
     });
     logger.blankLine();

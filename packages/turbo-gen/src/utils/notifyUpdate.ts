@@ -1,24 +1,22 @@
-import chalk from "chalk";
+import { yellow, bold } from "picocolors";
 import checkForUpdate from "update-check";
-
+import { logger } from "@turbo/utils";
 import cliPkgJson from "../../package.json";
 
 const update = checkForUpdate(cliPkgJson).catch(() => null);
 
-export default async function notifyUpdate(): Promise<void> {
+export async function notifyUpdate(): Promise<void> {
   try {
     const res = await update;
     if (res?.latest) {
-      console.log();
-      console.log(
-        chalk.yellow.bold(
-          `A new version of \`${cliPkgJson.name}\` is available!`
-        )
+      logger.log();
+      logger.log(
+        yellow(bold(`A new version of \`${cliPkgJson.name}\` is available!`))
       );
-      console.log();
+      logger.log();
     }
     process.exit();
-  } catch (_e: any) {
+  } catch (_) {
     // ignore error
   }
 }

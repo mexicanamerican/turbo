@@ -1,16 +1,15 @@
-use std::{process::Command, sync::Arc};
+use std::{io, process::Command, sync::Arc};
 
-use anyhow::Result;
 use shared_child::SharedChild;
 
 /// Spawns a child in a way where SIGINT is correctly forwarded to the child
-pub fn spawn_child(mut command: Command) -> Result<Arc<SharedChild>> {
+pub fn spawn_child(mut command: Command) -> Result<Arc<SharedChild>, io::Error> {
     let shared_child = Arc::new(SharedChild::spawn(&mut command)?);
     let handler_shared_child = shared_child.clone();
 
     ctrlc::set_handler(move || {
         // on windows, we can't send signals so just kill
-        // we are quiting anyways so just ignore
+        // we are quitting anyways so just ignore
         #[cfg(target_os = "windows")]
         handler_shared_child.kill().ok();
 

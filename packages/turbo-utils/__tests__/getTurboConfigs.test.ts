@@ -1,6 +1,7 @@
-import path from "path";
-import { getTurboConfigs } from "../src/getTurboConfigs";
+import path from "node:path";
 import { setupTestFixtures } from "@turbo/test-utils";
+import { describe, it, expect } from "@jest/globals";
+import { getTurboConfigs } from "../src/getTurboConfigs";
 
 describe("getTurboConfigs", () => {
   const { useFixture } = setupTestFixtures({
@@ -8,67 +9,67 @@ describe("getTurboConfigs", () => {
     test: "common",
   });
 
-  it("supports single-package repos", async () => {
+  it("supports single-package repos", () => {
     const { root } = useFixture({ fixture: `single-package` });
     const configs = getTurboConfigs(root);
     expect(configs).toHaveLength(1);
     expect(configs[0].isRootConfig).toBe(true);
     expect(configs[0].config).toMatchInlineSnapshot(`
-      Object {
+      {
         "$schema": "https://turbo.build/schema.json",
-        "globalEnv": Array [
+        "globalEnv": [
           "UNORDERED",
           "CI",
         ],
-        "pipeline": Object {
-          "build": Object {
-            "dependsOn": Array [
+        "tasks": {
+          "build": {
+            "dependsOn": [
               "^build",
             ],
           },
-          "deploy": Object {
-            "dependsOn": Array [
+          "deploy": {
+            "dependsOn": [
               "build",
               "test",
               "lint",
             ],
-            "outputs": Array [],
+            "outputs": [],
           },
-          "lint": Object {
-            "outputs": Array [],
+          "lint": {
+            "outputs": [],
           },
-          "test": Object {
-            "dependsOn": Array [
+          "test": {
+            "dependsOn": [
               "build",
             ],
-            "inputs": Array [
+            "inputs": [
               "src/**/*.tsx",
               "src/**/*.ts",
               "test/**/*.ts",
               "test/**/*.tsx",
             ],
-            "outputs": Array [],
+            "outputs": [],
           },
         },
       }
     `);
   });
 
-  it("supports repos using workspace configs", async () => {
+  it("supports repos using workspace configs", () => {
     const { root } = useFixture({ fixture: `workspace-configs` });
     const configs = getTurboConfigs(root);
 
     expect(configs).toHaveLength(3);
     expect(configs[0].isRootConfig).toBe(true);
     expect(configs[0].config).toMatchInlineSnapshot(`
-      Object {
+      {
         "$schema": "https://turbo.build/schema.json",
-        "globalEnv": Array [
+        "globalEnv": [
           "CI",
         ],
-        "pipeline": Object {
-          "build": Object {
-            "env": Array [
+        "tasks": {
+          "build": {
+            "env": [
               "ENV_1",
             ],
           },
@@ -77,14 +78,14 @@ describe("getTurboConfigs", () => {
     `);
     expect(configs[1].isRootConfig).toBe(false);
     expect(configs[1].config).toMatchInlineSnapshot(`
-      Object {
+      {
         "$schema": "https://turbo.build/schema.json",
-        "extends": Array [
+        "extends": [
           "//",
         ],
-        "pipeline": Object {
-          "build": Object {
-            "env": Array [
+        "tasks": {
+          "build": {
+            "env": [
               "ENV_2",
             ],
           },
@@ -94,14 +95,14 @@ describe("getTurboConfigs", () => {
 
     expect(configs[2].isRootConfig).toBe(false);
     expect(configs[2].config).toMatchInlineSnapshot(`
-      Object {
+      {
         "$schema": "https://turbo.build/schema.json",
-        "extends": Array [
+        "extends": [
           "//",
         ],
-        "pipeline": Object {
-          "build": Object {
-            "env": Array [
+        "tasks": {
+          "build": {
+            "env": [
               "IS_SERVER",
             ],
           },
@@ -110,30 +111,30 @@ describe("getTurboConfigs", () => {
     `);
   });
 
-  it("supports repos with old workspace configuration format", async () => {
+  it("supports repos with old workspace configuration format", () => {
     const { root } = useFixture({ fixture: `old-workspace-config` });
     const configs = getTurboConfigs(root);
 
     expect(configs).toHaveLength(1);
     expect(configs[0].isRootConfig).toBe(true);
     expect(configs[0].config).toMatchInlineSnapshot(`
-      Object {
+      {
         "$schema": "https://turbo.build/schema.json",
-        "globalDependencies": Array [
+        "globalDependencies": [
           "**/.env.*local",
         ],
-        "pipeline": Object {
-          "build": Object {
-            "outputs": Array [
+        "tasks": {
+          "build": {
+            "outputs": [
               ".next/**",
               "!.next/cache/**",
             ],
           },
-          "dev": Object {
+          "dev": {
             "cache": false,
             "persistent": true,
           },
-          "lint": Object {},
+          "lint": {},
         },
       }
     `);

@@ -1,16 +1,22 @@
 #!/usr/bin/env node
 
-import chalk from "chalk";
-import { Command } from "commander";
-import notifyUpdate from "./utils/notifyUpdate";
+import http from "node:http";
+import https from "node:https";
+import { bold } from "picocolors";
+import { Command, Option } from "commander";
 import { logger } from "@turbo/utils";
-
-import { create } from "./commands";
-import cliPkg from "../package.json";
-
+import {
+  type CreateTurboTelemetry,
+  initTelemetry,
+  withTelemetryCommand,
+} from "@turbo/telemetry";
 import { ProxyAgent } from "proxy-agent";
-import http from "http";
-import https from "https";
+import cliPkg from "../package.json";
+import { notifyUpdate } from "./utils/notifyUpdate";
+import { create } from "./commands";
+
+// Global telemetry client
+let telemetryClient: CreateTurboTelemetry | undefined;
 
 // Support http proxy vars
 const agent = new ProxyAgent();
@@ -21,11 +27,33 @@ const createTurboCli = new Command();
 
 // create
 createTurboCli
-  .name(chalk.bold(logger.turboGradient("create-turbo")))
+  .name(bold(logger.turboGradient("create-turbo")))
   .description("Create a new Turborepo")
-  .usage(`${chalk.bold("<project-directory> <package-manager>")} [options]`)
+  .usage(`${bold("<project-directory>")} [options]`)
+  .hook("preAction", async (_, thisAction) => {
+    const { telemetry } = await initTelemetry<"create-turbo">({
+      packageInfo: {
+        name: "create-turbo",
+        version: cliPkg.version,
+      },
+    });
+    // inject telemetry into the action as an option
+    thisAction.addOption(
+      new Option("--telemetry").default(telemetry).hideHelp()
+    );
+    telemetryClient = telemetry;
+  })
+  .hook("postAction", async () => {
+    await telemetryClient?.close();
+  })
+
   .argument("[project-directory]")
-  .argument("[package-manager]")
+  .addOption(
+    new Option(
+      "-m, --package-manager <package-manager>",
+      "Specify the package manager to use"
+    ).choices(["npm", "yarn", "pnpm", "bun"])
+  )
   .option(
     "--skip-install",
     "Do not run a package manager install after creating the project",
@@ -41,7 +69,7 @@ createTurboCli
     "Use a specific version of turbo (default: latest)"
   )
   .option(
-    "-e, --example [name]|[github-url]",
+    "-e, --example <name>|<github-url>",
     `
   An example to bootstrap the app with. You can use an example name
   from the official Turborepo repo or a GitHub URL. The URL can use
@@ -61,18 +89,17 @@ createTurboCli
   .helpOption("-h, --help", "Display help for command")
   .action(create);
 
+// Add telemetry command to the CLI
+withTelemetryCommand(createTurboCli);
+
 createTurboCli
   .parseAsync()
   .then(notifyUpdate)
   .catch(async (reason) => {
-    console.log();
-    if (reason.command) {
-      logger.error(`${chalk.bold(reason.command)} has failed.`);
-    } else {
-      logger.error("Unexpected error. Please report it as a bug:");
-      console.log(reason);
-    }
-    console.log();
+    logger.log();
+    logger.error("Unexpected error. Please report it as a bug:");
+    logger.log(reason);
+    logger.log();
     await notifyUpdate();
     process.exit(1);
   });

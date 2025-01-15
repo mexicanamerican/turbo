@@ -1,4 +1,6 @@
-export default function mockEnv() {
+import { afterAll, beforeEach, jest } from "@jest/globals";
+
+export function mockEnv() {
   const OLD_ENV = process.env;
 
   beforeEach(() => {

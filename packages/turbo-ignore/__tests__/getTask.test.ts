@@ -1,27 +1,29 @@
+import { spyConsole } from "@turbo/test-utils";
+import { describe, it, expect } from "@jest/globals";
 import { getTask } from "../src/getTask";
-import { spyConsole, validateLogs } from "@turbo/test-utils";
 
 describe("getWorkspace()", () => {
   const mockConsole = spyConsole();
-  it("getTask defaults to build", async () => {
+  it("getTask defaults to build", () => {
     expect(getTask({})).toEqual("build");
-    validateLogs(
-      ['Using "build" as the task as it was unspecified'],
-      mockConsole.log,
-      { prefix: "≫  " }
+    expect(mockConsole.log).toHaveBeenNthCalledWith(
+      1,
+      "≫  ",
+      'Using "build" as the task as it was unspecified'
     );
   });
 
-  it("getTask returns a quoted task if user-supplied", async () => {
+  it("getTask returns a quoted task if user-supplied", () => {
     expect(
       getTask({
         task: "workspace#task",
       })
     ).toEqual(`"workspace#task"`);
-    validateLogs(
-      ['Using "workspace#task" as the task from the arguments'],
-      mockConsole.log,
-      { prefix: "≫  " }
+
+    expect(mockConsole.log).toHaveBeenNthCalledWith(
+      1,
+      "≫  ",
+      'Using "workspace#task" as the task from the arguments'
     );
   });
 });

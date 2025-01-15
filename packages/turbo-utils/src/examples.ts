@@ -1,19 +1,19 @@
+import { Stream } from "node:stream";
+import { promisify } from "node:util";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { createWriteStream, promises as fs } from "node:fs";
+import { x as extract } from "tar";
 import got from "got";
-import tar from "tar";
-import { Stream } from "stream";
-import { promisify } from "util";
-import { join } from "path";
-import { tmpdir } from "os";
-import { createWriteStream, promises as fs } from "fs";
 
 const pipeline = promisify(Stream.pipeline);
 
-export type RepoInfo = {
+export interface RepoInfo {
   username: string;
   name: string;
   branch: string;
   filePath: string;
-};
+}
 
 export async function isUrlOk(url: string): Promise<boolean> {
   try {
@@ -28,8 +28,9 @@ export async function getRepoInfo(
   url: URL,
   examplePath?: string
 ): Promise<RepoInfo | undefined> {
-  const [, username, name, tree, sourceBranch, ...file] =
-    url.pathname.split("/");
+  const [, username, name, tree, sourceBranch, ...file] = url.pathname.split(
+    "/"
+  ) as Array<string | undefined>;
   const filePath = examplePath
     ? examplePath.replace(/^\//, "")
     : file.join("/");
@@ -47,8 +48,13 @@ export async function getRepoInfo(
       const infoResponse = await got(
         `https://api.github.com/repos/${username}/${name}`
       );
-      const info = JSON.parse(infoResponse.body);
-      return { username, name, branch: info["default_branch"], filePath };
+      const info = JSON.parse(infoResponse.body) as { default_branch: string };
+      return {
+        username,
+        name,
+        branch: info.default_branch,
+        filePath,
+      } as RepoInfo;
     } catch (err) {
       return;
     }
@@ -76,7 +82,7 @@ export function hasRepo({
   const contentsUrl = `https://api.github.com/repos/${username}/${name}/contents`;
   const packagePath = `${filePath ? `/${filePath}` : ""}/package.json`;
 
-  return isUrlOk(contentsUrl + packagePath + `?ref=${branch}`);
+  return isUrlOk(`${contentsUrl + packagePath}?ref=${branch}`);
 }
 
 export function existsInRepo(nameOrUrl: string): Promise<boolean> {
@@ -107,16 +113,21 @@ export async function downloadAndExtractRepo(
     `turbo-ct-example`
   );
 
-  await tar.x({
+  let rootPath: string | null = null;
+  await extract({
     file: tempFile,
     cwd: root,
     strip: filePath ? filePath.split("/").length + 1 : 1,
-    filter: (p: string) =>
-      p.startsWith(
-        `${name}-${branch.replace(/\//g, "-")}${
-          filePath ? `/${filePath}/` : "/"
-        }`
-      ),
+    filter: (p: string) => {
+      // Determine the unpacked root path dynamically instead of hardcoding to the fetched repo's name. This avoids the condition when the repository has been renamed, and the
+      // old repository name is used to fetch the example. The tar download will work as it is redirected automatically, but the root directory of the extracted
+      // example will be the new, renamed name instead of the name used to fetch the example.
+      if (rootPath === null) {
+        const pathSegments = p.split("/");
+        rootPath = pathSegments.length ? pathSegments[0] : null;
+      }
+      return p.startsWith(`${rootPath}${filePath ? `/${filePath}/` : "/"}`);
+    },
   });
 
   await fs.unlink(tempFile);
@@ -124,15 +135,26 @@ export async function downloadAndExtractRepo(
 
 export async function downloadAndExtractExample(root: string, name: string) {
   const tempFile = await downloadTar(
-    `https://codeload.github.com/vercel/turbo/tar.gz/main`,
+    `https://codeload.github.com/vercel/turborepo/tar.gz/main`,
     `turbo-ct-example`
   );
 
-  await tar.x({
+  let rootPath: string | null = null;
+  await extract({
     file: tempFile,
     cwd: root,
     strip: 2 + name.split("/").length,
-    filter: (p: string) => p.includes(`turbo-main/examples/${name}/`),
+    filter: (p: string) => {
+      // Determine the unpacked root path dynamically instead of hardcoding. This avoids the condition when the repository has been renamed, and the
+      // old repository name is used to fetch the example. The tar download will work as it is redirected automatically, but the root directory of the extracted
+      // example will be the new, renamed name instead of the name used to fetch the example.
+      if (rootPath === null) {
+        const pathSegments = p.split("/");
+        rootPath = pathSegments.length ? pathSegments[0] : null;
+      }
+
+      return p.includes(`${rootPath}/examples/${name}/`);
+    },
   });
 
   await fs.unlink(tempFile);

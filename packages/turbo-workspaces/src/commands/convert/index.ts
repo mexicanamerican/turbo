@@ -1,12 +1,11 @@
-import { ConvertCommandArgument, ConvertCommandOptions } from "./types";
 import inquirer from "inquirer";
+import { dim } from "picocolors";
+import { getAvailablePackageManagers, type PackageManager } from "@turbo/utils";
 import { Logger } from "../../logger";
-import chalk from "chalk";
-import { getAvailablePackageManagers } from "@turbo/utils";
 import { directoryInfo } from "../../utils";
-import getWorkspaceDetails from "../../getWorkspaceDetails";
-import { PackageManager } from "../../types";
+import { getWorkspaceDetails } from "../../getWorkspaceDetails";
 import { convertProject } from "../../convert";
+import type { ConvertCommandArgument, ConvertCommandOptions } from "./types";
 
 function isPackageManagerDisabled({
   packageManager,
@@ -28,7 +27,7 @@ function isPackageManagerDisabled({
   return false;
 }
 
-export default async function convertCommand(
+export async function convertCommand(
   directory: ConvertCommandArgument,
   packageManager: ConvertCommandArgument,
   options: ConvertCommandOptions
@@ -47,15 +46,14 @@ export default async function convertCommand(
     message: "Where is the root of your repo?",
     when: !directory,
     default: ".",
-    validate: (directory: string) => {
-      const { exists, absolute } = directoryInfo({ directory });
+    validate: (d: string) => {
+      const { exists, absolute } = directoryInfo({ directory: d });
       if (exists) {
         return true;
-      } else {
-        return `Directory ${chalk.dim(`(${absolute})`)} does not exist`;
       }
+      return `Directory ${dim(`(${absolute})`)} does not exist`;
     },
-    filter: (directory: string) => directory.trim(),
+    filter: (d: string) => d.trim(),
   });
 
   const { directoryInput: selectedDirectory = directory } = directoryAnswer;
@@ -63,7 +61,7 @@ export default async function convertCommand(
     directory: selectedDirectory,
   });
   if (!exists) {
-    console.error(`Directory ${chalk.dim(`(${root})`)} does not exist`);
+    logger.error(`Directory ${dim(`(${root})`)} does not exist`);
     return process.exit(1);
   }
 
@@ -77,15 +75,20 @@ export default async function convertCommand(
   }>({
     name: "packageManagerInput",
     type: "list",
-    message: `Convert from ${project.packageManager} workspaces to:`,
+    message: `Convert from ${project.packageManager} to:`,
     when:
       !packageManager ||
       !Object.keys(availablePackageManagers).includes(packageManager),
-    choices: ["npm", "pnpm", "yarn"].map((p) => ({
-      name: `${p} workspaces`,
-      value: p,
+    choices: [
+      { pm: "npm", label: "npm" },
+      { pm: "pnpm", label: "pnpm" },
+      { pm: "yarn", label: "yarn" },
+      { pm: "bun", label: "Bun (beta)" },
+    ].map(({ pm, label }) => ({
+      name: label,
+      value: pm,
       disabled: isPackageManagerDisabled({
-        packageManager: p as PackageManager,
+        packageManager: pm as PackageManager,
         currentWorkspaceManger: project.packageManager,
         availablePackageManagers,
       }),
@@ -98,9 +101,10 @@ export default async function convertCommand(
 
   await convertProject({
     project,
-    to: {
+    convertTo: {
       name: selectedPackageManager,
-      version: availablePackageManagers[selectedPackageManager],
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- selectedPackageManager is validated against availablePackageManagers
+      version: availablePackageManagers[selectedPackageManager]!,
     },
     logger,
     options,

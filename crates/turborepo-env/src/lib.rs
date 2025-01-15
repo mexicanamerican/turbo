@@ -4,14 +4,16 @@ use std::{
     collections::HashMap,
     env,
     ops::{Deref, DerefMut},
-    string::ToString,
 };
 
-use regex::Regex;
+use regex::RegexBuilder;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-const DEFAULT_ENV_VARS: [&str; 1] = ["VERCEL_ANALYTICS_ID"];
+pub mod platform;
+
+const DEFAULT_ENV_VARS: &[&str] = ["VERCEL_ANALYTICS_ID", "VERCEL_ENV"].as_slice();
 
 #[derive(Clone, Debug, Error)]
 pub enum Error {
@@ -20,12 +22,56 @@ pub enum Error {
 }
 
 // TODO: Consider using immutable data structures here
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, PartialEq)]
 #[serde(transparent)]
 pub struct EnvironmentVariableMap(HashMap<String, String>);
 
+impl EnvironmentVariableMap {
+    // Returns a deterministically sorted set of EnvironmentVariablePairs
+    // from an EnvironmentVariableMap.
+    // This is the value that is used upstream as a task hash input,
+    // so we need it to be deterministic
+    pub fn to_hashable(&self) -> EnvironmentVariablePairs {
+        let mut list: Vec<_> = self.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
+        list.sort();
+
+        list
+    }
+
+    pub fn names(&self) -> Vec<String> {
+        let mut names: Vec<_> = self.keys().cloned().collect();
+        names.sort();
+
+        names
+    }
+
+    // Returns a deterministically sorted set of EnvironmentVariablePairs
+    // from an EnvironmentVariableMap
+    // This is the value used to print out the task hash input,
+    // so the values are cryptographically hashed
+    pub fn to_secret_hashable(&self) -> EnvironmentVariablePairs {
+        let mut pairs: Vec<String> = self
+            .iter()
+            .map(|(k, v)| {
+                if !v.is_empty() {
+                    let mut hasher = Sha256::new();
+                    hasher.update(v.as_bytes());
+                    let hash = hasher.finalize();
+                    let hexed_hash = hex::encode(hash);
+                    format!("{k}={hexed_hash}")
+                } else {
+                    format!("{k}=")
+                }
+            })
+            .collect();
+        // Make it deterministic to facilitate comparisons
+        pairs.sort();
+        pairs
+    }
+}
+
 // BySource contains a map of environment variables broken down by the source
-#[derive(Debug, Serialize)]
+#[derive(Debug, Default, Serialize, Clone)]
 pub struct BySource {
     pub explicit: EnvironmentVariableMap,
     pub matching: EnvironmentVariableMap,
@@ -34,11 +80,14 @@ pub struct BySource {
 // DetailedMap contains the composite and the detailed maps of environment
 // variables All is used as a taskhash input (taskhash.CalculateTaskHash)
 // BySource is used by dry runs and run summaries
-#[derive(Debug, Serialize)]
+#[derive(Debug, Default, Serialize, Clone)]
 pub struct DetailedMap {
     pub all: EnvironmentVariableMap,
     pub by_source: BySource,
 }
+
+// A list of "k=v" strings for env variables and their values
+pub type EnvironmentVariablePairs = Vec<String>;
 
 // WildcardMaps is a pair of EnvironmentVariableMaps.
 #[derive(Debug)]
@@ -105,7 +154,7 @@ impl EnvironmentVariableMap {
     fn wildcard_map_from_wildcards(
         &self,
         wildcard_patterns: &[impl AsRef<str>],
-    ) -> Result<WildcardMaps, regex::Error> {
+    ) -> Result<WildcardMaps, Error> {
         let mut output = WildcardMaps {
             inclusions: EnvironmentVariableMap::default(),
             exclusions: EnvironmentVariableMap::default(),
@@ -131,8 +180,13 @@ impl EnvironmentVariableMap {
         let include_regex_string = format!("^({})$", include_patterns.join("|"));
         let exclude_regex_string = format!("^({})$", exclude_patterns.join("|"));
 
-        let include_regex = Regex::new(&include_regex_string)?;
-        let exclude_regex = Regex::new(&exclude_regex_string)?;
+        let case_insensitive = cfg!(windows);
+        let include_regex = RegexBuilder::new(&include_regex_string)
+            .case_insensitive(case_insensitive)
+            .build()?;
+        let exclude_regex = RegexBuilder::new(&exclude_regex_string)
+            .case_insensitive(case_insensitive)
+            .build()?;
         for (env_var, env_value) in &self.0 {
             if !include_patterns.is_empty() && include_regex.is_match(env_var) {
                 output.inclusions.insert(env_var.clone(), env_value.clone());
@@ -150,7 +204,7 @@ impl EnvironmentVariableMap {
     pub fn from_wildcards(
         &self,
         wildcard_patterns: &[impl AsRef<str>],
-    ) -> Result<EnvironmentVariableMap, regex::Error> {
+    ) -> Result<EnvironmentVariableMap, Error> {
         if wildcard_patterns.is_empty() {
             return Ok(EnvironmentVariableMap::default());
         }
@@ -165,7 +219,7 @@ impl EnvironmentVariableMap {
     pub fn wildcard_map_from_wildcards_unresolved(
         &self,
         wildcard_patterns: &[String],
-    ) -> Result<WildcardMaps, regex::Error> {
+    ) -> Result<WildcardMaps, Error> {
         if wildcard_patterns.is_empty() {
             return Ok(WildcardMaps {
                 inclusions: EnvironmentVariableMap::default(),
@@ -221,10 +275,10 @@ fn wildcard_to_regex_pattern(pattern: &str) -> String {
 }
 
 pub fn get_global_hashable_env_vars(
-    env_at_execution_start: EnvironmentVariableMap,
+    env_at_execution_start: &EnvironmentVariableMap,
     global_env: &[String],
 ) -> Result<DetailedMap, Error> {
-    let default_env_var_map = env_at_execution_start.from_wildcards(&DEFAULT_ENV_VARS[..])?;
+    let default_env_var_map = env_at_execution_start.from_wildcards(DEFAULT_ENV_VARS)?;
 
     let user_env_var_set =
         env_at_execution_start.wildcard_map_from_wildcards_unresolved(global_env)?;
@@ -255,6 +309,8 @@ pub fn get_global_hashable_env_vars(
 mod tests {
     use test_case::test_case;
 
+    use super::*;
+
     #[test_case("LITERAL_\\*", "LITERAL_\\*" ; "literal star")]
     #[test_case("\\*LEADING", "\\*LEADING" ; "leading literal star")]
     #[test_case("\\!LEADING", "\\\\!LEADING" ; "leading literal bang")]
@@ -262,6 +318,44 @@ mod tests {
     #[test_case("*LEADING", ".*LEADING" ; "leading star")]
     fn test_wildcard_to_regex_pattern(pattern: &str, expected: &str) {
         let actual = super::wildcard_to_regex_pattern(pattern);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_case_sensitivity() {
+        let start = EnvironmentVariableMap(
+            vec![("Turbo".to_string(), "true".to_string())]
+                .into_iter()
+                .collect(),
+        );
+        let actual = start.from_wildcards(&["TURBO"]).unwrap();
+        if cfg!(windows) {
+            assert_eq!(actual.get("Turbo").map(|s| s.as_str()), Some("true"));
+        } else {
+            assert_eq!(actual.get("Turbo"), None);
+        }
+    }
+
+    #[test_case(&[], &["VERCEL_ANALYTICS_ID", "VERCEL_ENV"] ; "defaults")]
+    #[test_case(&["!VERCEL*"], &[] ; "removing defaults")]
+    #[test_case(&["FOO*", "!FOOD"], &["FOO", "FOOBAR", "VERCEL_ANALYTICS_ID", "VERCEL_ENV"] ; "intersecting globs")]
+    fn test_global_env(inputs: &[&str], expected: &[&str]) {
+        let env_at_start = EnvironmentVariableMap(
+            vec![
+                ("VERCEL_ENV", "prod"),
+                ("VERCEL_ANALYTICS_ID", "1"),
+                ("FOO", "bar"),
+                ("FOOBAR", "baz"),
+                ("FOOD", "cheese"),
+            ]
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v.to_owned()))
+            .collect(),
+        );
+        let inputs = inputs.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let actual = get_global_hashable_env_vars(&env_at_start, &inputs).unwrap();
+        let mut actual = actual.all.keys().map(|s| s.as_str()).collect::<Vec<_>>();
+        actual.sort();
         assert_eq!(actual, expected);
     }
 }

@@ -1,6 +1,10 @@
 // utils
 export { getTurboRoot } from "./getTurboRoot";
-export { getTurboConfigs, getWorkspaceConfigs } from "./getTurboConfigs";
+export {
+  getTurboConfigs,
+  getWorkspaceConfigs,
+  forEachTaskDef,
+} from "./getTurboConfigs";
 export { searchUp } from "./searchUp";
 export {
   getAvailablePackageManagers,
@@ -17,16 +21,16 @@ export {
   downloadAndExtractExample,
 } from "./examples";
 export { isWriteable } from "./isWriteable";
-export { createProject } from "./createProject";
+export { createProject, DownloadError } from "./createProject";
 export { convertCase } from "./convertCase";
 
 export * as logger from "./logger";
 
 // types
-export type { PackageManagerAvailable } from "./managers";
 export type { RepoInfo } from "./examples";
 export type {
   TurboConfig,
   TurboConfigs,
   WorkspaceConfig,
 } from "./getTurboConfigs";
+export * from "./types";

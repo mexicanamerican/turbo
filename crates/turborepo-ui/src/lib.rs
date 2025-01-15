@@ -1,4 +1,17 @@
-mod log_replayer;
+//! Turborepo's terminal UI library. Handles elements like spinners, colors,
+//! and logging. Includes a `PrefixedUI` struct that can be used to prefix
+//! output, and a `ColorSelector` that lets multiple concurrent resources get
+//! an assigned color.
+#![feature(deadline_api)]
+
+mod color_selector;
+mod line;
+mod logs;
+mod output;
+mod prefixed;
+pub mod sender;
+pub mod tui;
+pub mod wui;
 
 use std::{borrow::Cow, env, f64::consts::PI, time::Duration};
 
@@ -7,12 +20,25 @@ use indicatif::{ProgressBar, ProgressStyle};
 use lazy_static::lazy_static;
 use thiserror::Error;
 
+pub use crate::{
+    color_selector::ColorSelector,
+    line::LineWriter,
+    logs::{replay_logs, LogWriter},
+    output::{OutputClient, OutputClientBehavior, OutputSink, OutputWriter},
+    prefixed::{PrefixedUI, PrefixedWriter},
+    tui::{TaskTable, TerminalPane},
+};
+
 #[derive(Debug, Error)]
 pub enum Error {
+    #[error(transparent)]
+    Tui(#[from] tui::Error),
+    #[error(transparent)]
+    Wui(#[from] wui::Error),
     #[error("cannot read logs: {0}")]
-    CannotReadLogs(std::io::Error),
+    CannotReadLogs(#[source] std::io::Error),
     #[error("cannot write logs: {0}")]
-    CannotWriteLogs(std::io::Error),
+    CannotWriteLogs(#[source] std::io::Error),
 }
 
 pub fn start_spinner(message: &str) -> ProgressBar {
@@ -39,13 +65,90 @@ pub fn start_spinner(message: &str) -> ProgressBar {
     pb
 }
 
+#[macro_export]
+macro_rules! color {
+    ($ui:expr, $color:expr, $format_string:expr $(, $arg:expr)*) => {{
+        let formatted_str = format!($format_string $(, $arg)*);
+
+        let colored_str = $color.apply_to(formatted_str);
+
+        $ui.apply(colored_str)
+    }};
+}
+
+#[macro_export]
+macro_rules! cprintln {
+    ($ui:expr, $color:expr, $format_string:expr $(, $arg:expr)*) => {{
+        let formatted_str = format!($format_string $(, $arg)*);
+
+        let colored_str = $color.apply_to(formatted_str);
+
+        println!("{}", $ui.apply(colored_str))
+    }};
+}
+
+#[macro_export]
+macro_rules! cprint {
+    ($ui:expr, $color:expr, $format_string:expr $(, $arg:expr)*) => {{
+        let formatted_str = format!($format_string $(, $arg)*);
+
+        let colored_str = $color.apply_to(formatted_str);
+
+        print!("{}", $ui.apply(colored_str))
+    }};
+}
+
+#[macro_export]
+macro_rules! cwrite {
+    ($dst:expr, $ui:expr, $color:expr, $format_string:expr $(, $arg:expr)*) => {{
+        let formatted_str = format!($format_string $(, $arg)*);
+
+        let colored_str = $color.apply_to(formatted_str);
+
+        write!($dst, "{}", $ui.apply(colored_str))
+    }};
+}
+
+#[macro_export]
+macro_rules! cwriteln {
+    ($writer:expr, $ui:expr, $color:expr, $format_string:expr $(, $arg:expr)*) => {{
+        let formatted_str = format!($format_string $(, $arg)*);
+
+        let colored_str = $color.apply_to(formatted_str);
+
+        writeln!($writer, "{}", $ui.apply(colored_str))
+    }};
+}
+
+#[macro_export]
+macro_rules! ceprintln {
+    ($ui:expr, $color:expr, $format_string:expr $(, $arg:expr)*) => {{
+        let formatted_str = format!($format_string $(, $arg)*);
+
+        let colored_str = $color.apply_to(formatted_str);
+
+        eprintln!("{}", $ui.apply(colored_str))
+    }};
+}
+
+#[macro_export]
+macro_rules! ceprint {
+    ($ui:expr, $color:expr, $format_string:expr $(, $arg:expr)*) => {{
+        let formatted_str = format!($format_string $(, $arg)*);
+
+        let colored_str = $color.apply_to(formatted_str);
+
+        eprint!("{}", $ui.apply(colored_str))
+    }};
+}
+
 /// Helper struct to apply any necessary formatting to UI output
-#[derive(Debug)]
-pub struct UI {
+#[derive(Debug, Clone, Copy)]
+pub struct ColorConfig {
     pub should_strip_ansi: bool,
 }
 
-impl UI {
+impl ColorConfig {
     pub fn new(should_strip_ansi: bool) -> Self {
         Self { should_strip_ansi }
     }
@@ -116,26 +219,37 @@ lazy_static! {
     pub static ref CYAN: Style = Style::new().cyan();
     pub static ref BOLD: Style = Style::new().bold();
     pub static ref MAGENTA: Style = Style::new().magenta();
+    pub static ref YELLOW: Style = Style::new().yellow();
+    pub static ref BOLD_YELLOW_REVERSE: Style = Style::new().yellow().bold().reverse();
     pub static ref UNDERLINE: Style = Style::new().underlined();
+    pub static ref BOLD_CYAN: Style = Style::new().cyan().bold();
+    pub static ref BOLD_GREY: Style = Style::new().dim().bold();
+    pub static ref BOLD_GREEN: Style = Style::new().green().bold();
+    pub static ref BOLD_RED: Style = Style::new().red().bold();
 }
 
 pub const RESET: &str = "\x1b[0m";
+
+pub use dialoguer::theme::ColorfulTheme as DialoguerTheme;
 
 #[cfg(test)]
 mod test {
     use super::*;
 
     #[test]
-    fn test_ui_strips_ansi() {
-        let ui = UI::new(true);
+    fn test_color_config_strips_ansi() {
+        let color_config = ColorConfig::new(true);
         let grey_str = GREY.apply_to("gray");
-        assert_eq!(format!("{}", ui.apply(grey_str)), "gray");
+        assert_eq!(format!("{}", color_config.apply(grey_str)), "gray");
     }
 
     #[test]
-    fn test_ui_resets_term() {
-        let ui = UI::new(false);
+    fn test_color_config_resets_term() {
+        let color_config = ColorConfig::new(false);
         let grey_str = GREY.apply_to("gray");
-        assert_eq!(format!("{}", ui.apply(grey_str)), "\u{1b}[2mgray\u{1b}[0m");
+        assert_eq!(
+            format!("{}", color_config.apply(grey_str)),
+            "\u{1b}[2mgray\u{1b}[0m"
+        );
     }
 }

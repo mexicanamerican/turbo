@@ -47,6 +47,9 @@ Skip turbo-ignore check and automatically deploy:
   - [vercel build]
   - [vercel deploy <workspace>]
   - [vercel build <workspace>]
+
+Skip turbo-ignore check and automatically deploy specific workspace and ignore others:
+  - [vercel only <workspace>]
 ```
 
 ### Examples
@@ -97,4 +100,4 @@ When deploying on [Vercel](https://vercel.com), `turbo-ignore` can make a more a
 
 ---
 
-For more information about Turborepo, visit [turbo.build](https://turbo.build) and follow us on Twitter ([@turborepo](https://twitter.com/turborepo))!
+For more information about Turborepo, visit [turbo.build](https://turbo.build) and follow us on X ([@turborepo](https://x.com/turborepo))!

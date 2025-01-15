@@ -1,77 +1,81 @@
-use anyhow::Result;
-use turborepo_ui::GREY;
+use std::{env, io, path::Path};
 
-use crate::{
-    commands::CommandBase,
-    package_graph::{PackageGraph, WorkspaceName, WorkspaceNode},
-    package_json::PackageJson,
-    package_manager::PackageManager,
-};
+use sysinfo::{System, SystemExt};
+use thiserror::Error;
+use turborepo_repository::{package_json::PackageJson, package_manager::PackageManager};
 
-pub fn run(base: &mut CommandBase, workspace: Option<&str>) -> Result<()> {
-    let root_package_json = PackageJson::load(&base.repo_root.join_component("package.json"))?;
+use super::CommandBase;
+use crate::{DaemonConnector, DaemonConnectorError};
 
-    let package_manager =
-        PackageManager::get_package_manager(&base.repo_root, Some(&root_package_json))?;
-
-    let package_graph = PackageGraph::builder(&base.repo_root, root_package_json)
-        .with_package_manger(Some(package_manager))
-        .build()?;
-
-    if let Some(workspace) = workspace {
-        print_workspace_details(&package_graph, workspace)
-    } else {
-        print_repo_details(&package_graph)
-    }
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("could not get path to turbo binary: {0}")]
+    NoCurrentExe(#[from] io::Error),
 }
 
-fn print_repo_details(package_graph: &PackageGraph) -> Result<()> {
-    // We subtract 1 for the root workspace
-    println!("{} packages found in workspace\n", package_graph.len() - 1);
-
-    let mut workspaces: Vec<_> = package_graph.workspaces().collect();
-    workspaces.sort_by(|a, b| a.0.cmp(b.0));
-
-    for (workspace_name, entry) in workspaces {
-        if matches!(workspace_name, WorkspaceName::Root) {
-            continue;
-        }
-        println!(
-            "- {} {}",
-            workspace_name,
-            GREY.apply_to(entry.package_json_path())
-        );
-    }
-
-    Ok(())
+// https://superuser.com/questions/1749781/how-can-i-check-if-the-environment-is-wsl-from-a-shell-script/1749811#1749811
+fn is_wsl() -> bool {
+    Path::new("/proc/sys/fs/binfmt_misc/WSLInterop").exists()
 }
 
-fn print_workspace_details(package_graph: &PackageGraph, workspace_name: &str) -> Result<()> {
-    let workspace_node = match workspace_name {
-        "//" => WorkspaceNode::Root,
-        name => WorkspaceNode::Workspace(WorkspaceName::Other(name.to_string())),
+pub async fn run(base: CommandBase) {
+    let system = System::new_all();
+    let connector = DaemonConnector::new(false, false, &base.repo_root);
+    let daemon_status = match connector.connect().await {
+        Ok(_status) => "Running",
+        Err(DaemonConnectorError::NotRunning) => "Not running",
+        Err(_e) => "Error getting status",
     };
-
-    let transitive_dependencies = package_graph.transitive_closure(Some(&workspace_node));
-
-    let mut workspace_dep_names: Vec<&str> = transitive_dependencies
-        .into_iter()
-        .filter_map(|dependency| match dependency {
-            WorkspaceNode::Root | WorkspaceNode::Workspace(WorkspaceName::Root) => Some("root"),
-            WorkspaceNode::Workspace(WorkspaceName::Other(dep_name))
-                if dep_name == workspace_name =>
-            {
-                None
-            }
-            WorkspaceNode::Workspace(WorkspaceName::Other(dep_name)) => Some(dep_name.as_str()),
+    let package_manager = PackageJson::load(&base.repo_root.join_component("package.json"))
+        .ok()
+        .and_then(|package_json| {
+            PackageManager::read_or_detect_package_manager(&package_json, &base.repo_root).ok()
         })
-        .collect();
-    workspace_dep_names.sort();
+        .map_or_else(|| "Not found".to_owned(), |pm| pm.name().to_string());
 
-    println!("{} depends on:", workspace_name);
-    for dep_name in workspace_dep_names {
-        println!("- {}", dep_name);
-    }
+    println!("CLI:");
+    println!("   Version: {}", base.version);
 
-    Ok(())
+    let exe_path = std::env::current_exe().map_or_else(
+        |e| format!("Cannot determine current binary: {e}").to_owned(),
+        |path| path.to_string_lossy().into_owned(),
+    );
+
+    println!("   Path to executable: {}", exe_path);
+    println!("   Daemon status: {}", daemon_status);
+    println!("   Package manager: {}", package_manager);
+    println!();
+
+    println!("Platform:");
+    println!("   Architecture: {}", std::env::consts::ARCH);
+    println!("   Operating system: {}", std::env::consts::OS);
+    println!("   WSL: {}", is_wsl());
+    println!(
+        "   Available memory (MB): {}",
+        system.available_memory() / 1024 / 1024
+    );
+    println!("   Available CPU cores: {}", num_cpus::get());
+    println!();
+
+    println!("Environment:");
+    println!("   CI: {:#?}", turborepo_ci::Vendor::get_name());
+    println!(
+        "   Terminal (TERM): {}",
+        env::var("TERM").unwrap_or_else(|_| "unknown".to_owned())
+    );
+
+    println!(
+        "   Terminal program (TERM_PROGRAM): {}",
+        env::var("TERM_PROGRAM").unwrap_or_else(|_| "unknown".to_owned())
+    );
+    println!(
+        "   Terminal program version (TERM_PROGRAM_VERSION): {}",
+        env::var("TERM_PROGRAM_VERSION").unwrap_or_else(|_| "unknown".to_owned())
+    );
+    println!(
+        "   Shell (SHELL): {}",
+        env::var("SHELL").unwrap_or_else(|_| "unknown".to_owned())
+    );
+    println!("   stdin: {}", turborepo_ci::is_ci());
+    println!();
 }

@@ -7,13 +7,15 @@ use std::{
 
 use command_group::AsyncCommandGroup;
 use notify::{Config, Event, EventKind, Watcher};
+use pidlock::PidFileError;
 use sysinfo::{Pid, ProcessExt, ProcessRefreshKind, RefreshKind, SystemExt};
 use thiserror::Error;
 use tokio::{sync::mpsc, time::timeout};
 use tonic::transport::Endpoint;
 use tracing::debug;
+use turbopath::AbsoluteSystemPath;
 
-use super::{client::proto::turbod_client::TurbodClient, DaemonClient};
+use super::{proto::turbod_client::TurbodClient, DaemonClient, Paths};
 use crate::daemon::DaemonError;
 
 #[derive(Error, Debug)]
@@ -34,7 +36,7 @@ pub enum DaemonConnectorError {
     #[error("unable to make handshake: {0}")]
     Handshake(#[from] Box<DaemonError>),
     /// Waiting for the socket timed out.
-    #[error("timeout while watchin directory: {0}")]
+    #[error("timeout while watching directory: {0}")]
     Timeout(#[from] tokio::time::error::Elapsed),
     /// There was an issue in the file watcher.
     #[error("unable to watch directory: {0}")]
@@ -42,6 +44,9 @@ pub enum DaemonConnectorError {
 
     #[error("unable to connect to daemon after {0} retries")]
     ConnectRetriesExceeded(usize),
+
+    #[error("unable to use pid file: {0}")]
+    PidFile(#[from] PidFileError),
 }
 
 #[derive(Error, Debug)]
@@ -52,7 +57,7 @@ pub enum ForkError {
     Spawn(#[from] std::io::Error),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DaemonConnector {
     /// Whether the connector is allowed to start a daemon if it is not already
     /// running.
@@ -60,11 +65,23 @@ pub struct DaemonConnector {
     /// Whether the connector is allowed to kill a running daemon (for example,
     /// in the event of a version mismatch).
     pub can_kill_server: bool,
-    pub pid_file: turbopath::AbsoluteSystemPathBuf,
-    pub sock_file: turbopath::AbsoluteSystemPathBuf,
+    pub paths: Paths,
 }
 
 impl DaemonConnector {
+    pub fn new(
+        can_start_server: bool,
+        can_kill_server: bool,
+        repo_root: &AbsoluteSystemPath,
+    ) -> Self {
+        let paths = Paths::from_repo_root(repo_root);
+        Self {
+            can_start_server,
+            can_kill_server,
+            paths,
+        }
+    }
+
     const CONNECT_RETRY_MAX: usize = 3;
     const CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
     const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
@@ -82,13 +99,14 @@ impl DaemonConnector {
     /// 1. the versions do not match
     /// 2. the server is not running
     /// 3. the server is unresponsive
+    #[tracing::instrument(skip(self))]
     pub async fn connect(self) -> Result<DaemonClient<DaemonConnector>, DaemonConnectorError> {
         let time = Instant::now();
         for _ in 0..Self::CONNECT_RETRY_MAX {
             let pid = self.get_or_start_daemon().await?;
             debug!("got daemon with pid: {}", pid);
 
-            let conn = match self.get_connection(self.sock_file.clone()).await {
+            let conn = match self.get_connection(self.paths.sock_file.clone()).await {
                 Err(DaemonConnectorError::Watcher(_)) => continue,
                 Err(DaemonConnectorError::Socket(e)) => {
                     // assume the server is not yet ready
@@ -108,10 +126,10 @@ impl DaemonConnector {
                         Ok(client.with_connect_settings(self))
                     }
                 }
-                Err(DaemonError::VersionMismatch) if self.can_kill_server => {
+                Err(DaemonError::VersionMismatch(_)) if self.can_kill_server => {
                     self.kill_live_server(client, pid).await?
                 }
-                Err(DaemonError::Unavailable) => self.kill_dead_server(pid).await?,
+                Err(DaemonError::Unavailable(_)) => self.kill_dead_server(pid).await?,
                 Err(e) => return Err(DaemonConnectorError::Handshake(Box::new(e))),
             };
         }
@@ -125,11 +143,11 @@ impl DaemonConnector {
     ///
     /// If a daemon is not running, it starts one.
     async fn get_or_start_daemon(&self) -> Result<sysinfo::Pid, DaemonConnectorError> {
-        debug!("looking for pid in lockfile: {:?}", self.pid_file);
+        debug!("looking for pid in lockfile: {:?}", self.paths.pid_file);
 
         let pidfile = self.pid_lock();
 
-        match pidfile.get_owner() {
+        match pidfile.get_owner()? {
             Some(pid) => {
                 debug!("found pid: {}", pid);
                 Ok(sysinfo::Pid::from(pid as usize))
@@ -146,7 +164,6 @@ impl DaemonConnector {
     async fn start_daemon() -> Result<sysinfo::Pid, DaemonConnectorError> {
         let binary_path =
             std::env::current_exe().map_err(|e| DaemonConnectorError::Fork(e.into()))?;
-
         // this creates a new process group for the given command
         // in a cross platform way, directing all output to /dev/null
         let mut group = tokio::process::Command::new(binary_path)
@@ -171,6 +188,7 @@ impl DaemonConnector {
     /// On Windows the socket file cannot be interacted with via any filesystem
     /// apis, due to this we need to just naively attempt to connect on that
     /// platform and retry in case of error.
+    #[tracing::instrument(skip(self))]
     async fn get_connection(
         &self,
         path: turbopath::AbsoluteSystemPathBuf,
@@ -220,7 +238,7 @@ impl DaemonConnector {
 
         match timeout(
             Self::SHUTDOWN_TIMEOUT,
-            wait_for_file(&self.pid_file, WaitAction::Deleted),
+            wait_for_file(&self.paths.pid_file, WaitAction::Deleted),
         )
         .await?
         {
@@ -239,7 +257,7 @@ impl DaemonConnector {
         );
 
         let owner = lock
-            .get_owner()
+            .get_owner()?
             .and_then(|p| system.process(sysinfo::Pid::from(p as usize)));
 
         // if the pidfile is owned by the same pid as the one we found, kill it
@@ -268,19 +286,19 @@ impl DaemonConnector {
         // exists to protect against stale .sock files
         timeout(
             Self::SOCKET_TIMEOUT,
-            wait_for_file(&self.pid_file, WaitAction::Exists),
+            wait_for_file(&self.paths.pid_file, WaitAction::Exists),
         )
         .await??;
         timeout(
             Self::SOCKET_TIMEOUT,
-            wait_for_file(&self.sock_file, WaitAction::Exists),
+            wait_for_file(&self.paths.sock_file, WaitAction::Exists),
         )
         .await?
         .map_err(Into::into)
     }
 
     fn pid_lock(&self) -> pidlock::Pidlock {
-        pidlock::Pidlock::new(self.pid_file.clone().into())
+        pidlock::Pidlock::new(self.paths.pid_file.clone().into())
     }
 }
 
@@ -308,7 +326,7 @@ pub enum FileWaitError {
 ///
 /// It does this by watching the parent directory of the path, and waiting for
 /// events on that path.
-#[tracing::instrument(skip(path))]
+#[tracing::instrument]
 async fn wait_for_file(
     path: &turbopath::AbsoluteSystemPathBuf,
     action: WaitAction,
@@ -391,67 +409,53 @@ enum WaitAction {
 
 #[cfg(test)]
 mod test {
-    use std::{assert_matches::assert_matches, path::Path};
+    use std::assert_matches::assert_matches;
 
-    use sysinfo::Pid;
     use tokio::{
         select,
         sync::{oneshot::Sender, Mutex},
     };
+    use tokio_stream::wrappers::ReceiverStream;
+    use tonic::{Request, Response, Status};
+    use tower::ServiceBuilder;
     use tracing::info;
     use turbopath::AbsoluteSystemPathBuf;
 
     use super::*;
-    use crate::daemon::client::proto;
+    use crate::daemon::{
+        default_timeout_layer::DefaultTimeoutLayer,
+        proto::{self, PackageChangesRequest},
+    };
 
     #[cfg(not(target_os = "windows"))]
     const NODE_EXE: &str = "node";
     #[cfg(target_os = "windows")]
     const NODE_EXE: &str = "node.exe";
 
-    fn pid_path(tmp_path: &Path) -> AbsoluteSystemPathBuf {
-        AbsoluteSystemPathBuf::try_from(tmp_path.join("turbod.pid")).unwrap()
-    }
-
-    fn sock_path(tmp_path: &Path) -> AbsoluteSystemPathBuf {
-        AbsoluteSystemPathBuf::try_from(tmp_path.join("turbod.sock")).unwrap()
-    }
-
     #[tokio::test]
     async fn handles_invalid_pid() {
         let tmp_dir = tempfile::tempdir().unwrap();
-        let tmp_path = tmp_dir.path().to_owned();
+        let repo_root = AbsoluteSystemPathBuf::try_from(tmp_dir.path()).unwrap();
 
-        let pid = pid_path(&tmp_path);
-        std::fs::write(&pid, "not a pid").unwrap();
-
-        let connector = DaemonConnector {
-            pid_file: pid,
-            sock_file: sock_path(&tmp_path),
-            can_kill_server: false,
-            can_start_server: false,
-        };
+        let connector = DaemonConnector::new(false, false, &repo_root);
+        connector.paths.pid_file.ensure_dir().unwrap();
+        connector
+            .paths
+            .pid_file
+            .create_with_contents("not a pid")
+            .unwrap();
 
         assert_matches!(
             connector.get_or_start_daemon().await,
-            Err(DaemonConnectorError::NotRunning)
+            Err(DaemonConnectorError::PidFile(PidFileError::Invalid { .. }))
         );
     }
 
     #[tokio::test]
     async fn handles_missing_server_connect() {
         let tmp_dir = tempfile::tempdir().unwrap();
-        let tmp_path = tmp_dir.path().to_owned();
-
-        let pid = pid_path(&tmp_path);
-        let sock = sock_path(&tmp_path);
-
-        let connector = DaemonConnector {
-            pid_file: pid,
-            sock_file: sock,
-            can_kill_server: false,
-            can_start_server: false,
-        };
+        let repo_root = AbsoluteSystemPathBuf::try_from(tmp_dir.path()).unwrap();
+        let connector = DaemonConnector::new(false, false, &repo_root);
 
         assert_matches!(
             connector.connect().await,
@@ -462,17 +466,8 @@ mod test {
     #[tokio::test]
     async fn handles_kill_dead_server_missing_pid() {
         let tmp_dir = tempfile::tempdir().unwrap();
-        let tmp_path = tmp_dir.path().to_owned();
-
-        let pid = pid_path(&tmp_path);
-        let sock = sock_path(&tmp_path);
-
-        let connector = DaemonConnector {
-            pid_file: pid,
-            sock_file: sock,
-            can_kill_server: false,
-            can_start_server: false,
-        };
+        let repo_root = AbsoluteSystemPathBuf::try_from(tmp_dir.path()).unwrap();
+        let connector = DaemonConnector::new(false, false, &repo_root);
 
         assert_matches!(
             connector.kill_dead_server(Pid::from(usize::MAX)).await,
@@ -483,32 +478,34 @@ mod test {
     #[tokio::test]
     async fn handles_kill_dead_server_missing_process() {
         let tmp_dir = tempfile::tempdir().unwrap();
-        let tmp_path = tmp_dir.path().to_owned();
+        let repo_root = AbsoluteSystemPathBuf::try_from(tmp_dir.path()).unwrap();
+        let connector = DaemonConnector::new(false, false, &repo_root);
 
-        let pid = pid_path(&tmp_path);
-        std::fs::write(&pid, usize::MAX.to_string()).unwrap();
-        let sock = sock_path(&tmp_path);
-        std::fs::write(&sock, "").unwrap();
-
-        let connector = DaemonConnector {
-            pid_file: pid,
-            sock_file: sock,
-            can_kill_server: false,
-            can_start_server: false,
-        };
+        connector.paths.pid_file.ensure_dir().unwrap();
+        connector
+            .paths
+            .pid_file
+            .create_with_contents(i32::MAX.to_string())
+            .unwrap();
+        connector.paths.sock_file.ensure_dir().unwrap();
+        connector.paths.sock_file.create_with_contents("").unwrap();
 
         assert_matches!(
             connector.kill_dead_server(Pid::from(usize::MAX)).await,
             Ok(())
         );
 
-        assert!(connector.pid_file.exists(), "pid file should still exist");
+        assert!(
+            !connector.paths.pid_file.exists(),
+            "pid file should be cleaned up when getting the owner of a stale pid"
+        );
     }
 
     #[tokio::test]
     async fn handles_kill_dead_server_wrong_process() {
         let tmp_dir = tempfile::tempdir().unwrap();
-        let tmp_path = tmp_dir.path().to_owned();
+        let repo_root = AbsoluteSystemPathBuf::try_from(tmp_dir.path()).unwrap();
+        let connector = DaemonConnector::new(false, false, &repo_root);
 
         let proc = tokio::process::Command::new(NODE_EXE)
             .stdout(Stdio::null())
@@ -518,17 +515,14 @@ mod test {
             .spawn()
             .unwrap();
 
-        let pid = pid_path(&tmp_path);
-        std::fs::write(&pid, proc.id().unwrap().to_string()).unwrap();
-        let sock = sock_path(&tmp_path);
-        std::fs::write(&sock, "").unwrap();
-
-        let connector = DaemonConnector {
-            pid_file: pid,
-            sock_file: sock,
-            can_kill_server: true,
-            can_start_server: false,
-        };
+        connector.paths.pid_file.ensure_dir().unwrap();
+        connector
+            .paths
+            .pid_file
+            .create_with_contents(proc.id().unwrap().to_string())
+            .unwrap();
+        connector.paths.sock_file.ensure_dir().unwrap();
+        connector.paths.sock_file.create_with_contents("").unwrap();
 
         let kill_pid = Pid::from(usize::MAX);
         let proc_id = Pid::from(proc.id().unwrap() as usize);
@@ -538,13 +532,17 @@ mod test {
             Err(DaemonConnectorError::WrongPidProcess(daemon, running)) if daemon == kill_pid && running == proc_id
         );
 
-        assert!(connector.pid_file.exists(), "pid file should still exist");
+        assert!(
+            connector.paths.pid_file.exists(),
+            "pid file should still exist"
+        );
     }
 
     #[tokio::test]
     async fn handles_kill_dead_server() {
         let tmp_dir = tempfile::tempdir().unwrap();
-        let tmp_path = tmp_dir.path().to_owned();
+        let repo_root = AbsoluteSystemPathBuf::try_from(tmp_dir.path()).unwrap();
+        let connector = DaemonConnector::new(false, true, &repo_root);
 
         let proc = tokio::process::Command::new(NODE_EXE)
             .stdout(Stdio::null())
@@ -554,17 +552,14 @@ mod test {
             .spawn()
             .unwrap();
 
-        let pid = pid_path(&tmp_path);
-        std::fs::write(&pid, proc.id().unwrap().to_string()).unwrap();
-        let sock = sock_path(&tmp_path);
-        std::fs::write(&sock, "").unwrap();
-
-        let connector = DaemonConnector {
-            pid_file: pid,
-            sock_file: sock,
-            can_kill_server: true,
-            can_start_server: false,
-        };
+        connector.paths.pid_file.ensure_dir().unwrap();
+        connector
+            .paths
+            .pid_file
+            .create_with_contents(proc.id().unwrap().to_string())
+            .unwrap();
+        connector.paths.sock_file.ensure_dir().unwrap();
+        connector.paths.sock_file.create_with_contents("").unwrap();
 
         assert_matches!(
             connector
@@ -573,7 +568,10 @@ mod test {
             Ok(())
         );
 
-        assert!(connector.pid_file.exists(), "pid file should still exist");
+        assert!(
+            connector.paths.pid_file.exists(),
+            "pid file should still exist"
+        );
     }
 
     struct DummyServer {
@@ -628,6 +626,35 @@ mod test {
         ) -> tonic::Result<tonic::Response<proto::GetChangedOutputsResponse>> {
             unimplemented!()
         }
+
+        async fn discover_packages(
+            &self,
+            _req: tonic::Request<proto::DiscoverPackagesRequest>,
+        ) -> Result<tonic::Response<proto::DiscoverPackagesResponse>, tonic::Status> {
+            unimplemented!()
+        }
+
+        async fn discover_packages_blocking(
+            &self,
+            _req: tonic::Request<proto::DiscoverPackagesRequest>,
+        ) -> Result<tonic::Response<proto::DiscoverPackagesResponse>, tonic::Status> {
+            unimplemented!()
+        }
+
+        type PackageChangesStream = ReceiverStream<Result<proto::PackageChangeEvent, Status>>;
+        async fn package_changes(
+            &self,
+            _req: Request<PackageChangesRequest>,
+        ) -> Result<Response<Self::PackageChangesStream>, Status> {
+            unimplemented!()
+        }
+
+        async fn get_file_hashes(
+            &self,
+            _req: tonic::Request<proto::GetFileHashesRequest>,
+        ) -> Result<tonic::Response<proto::GetFileHashesResponse>, tonic::Status> {
+            unimplemented!()
+        }
     }
 
     #[tokio::test]
@@ -643,31 +670,19 @@ mod test {
             }
         };
 
-        let server_fut = tonic::transport::Server::builder()
-            .add_service(proto::turbod_server::TurbodServer::new(DummyServer {
+        let service = ServiceBuilder::new().layer(DefaultTimeoutLayer).service(
+            proto::turbod_server::TurbodServer::new(DummyServer {
                 shutdown: Mutex::new(Some(shutdown_tx)),
-            }))
+            }),
+        );
+
+        let server_fut = tonic::transport::Server::builder()
+            .add_service(service)
             .serve_with_incoming(stream);
 
-        let (pid_file, sock_file) = if cfg!(windows) {
-            (
-                AbsoluteSystemPathBuf::new("C:\\pid").unwrap(),
-                AbsoluteSystemPathBuf::new("C:\\sock").unwrap(),
-            )
-        } else {
-            (
-                AbsoluteSystemPathBuf::new("/pid").unwrap(),
-                AbsoluteSystemPathBuf::new("/sock").unwrap(),
-            )
-        };
-
-        // set up the client
-        let conn = DaemonConnector {
-            pid_file,
-            sock_file,
-            can_kill_server: false,
-            can_start_server: false,
-        };
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let repo_root = AbsoluteSystemPathBuf::try_from(tmp_dir.path()).unwrap();
+        let connector = DaemonConnector::new(false, false, &repo_root);
 
         let mut client = Endpoint::try_from("http://[::]:50051")
             .expect("this is a valid uri")
@@ -698,10 +713,10 @@ mod test {
             .await
             .unwrap_err()
             .into();
-        assert_matches!(hello_resp, DaemonError::VersionMismatch);
+        assert_matches!(hello_resp, DaemonError::VersionMismatch(_));
         let client = DaemonClient::new(client);
 
-        let shutdown_fut = conn.kill_live_server(client, Pid::from(1000));
+        let shutdown_fut = connector.kill_live_server(client, Pid::from(1000));
 
         // drive the futures to completion
         select! {

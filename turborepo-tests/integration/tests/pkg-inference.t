@@ -1,16 +1,15 @@
 Setup
-  $ . ${TESTDIR}/../../helpers/setup.sh
-  $ . ${TESTDIR}/_helpers/setup_monorepo.sh $(pwd)
+  $ . ${TESTDIR}/../../helpers/setup_integration_test.sh
 
 # Run as if called by global turbo
   $ TURBO_INVOCATION_DIR=$(pwd)/packages/util ${TURBO} build --skip-infer
   \xe2\x80\xa2 Packages in scope: util (esc)
   \xe2\x80\xa2 Running build in 1 packages (esc)
   \xe2\x80\xa2 Remote caching disabled (esc)
-  util:build: cache miss, executing 76ab904c7ecb2d51
+  util:build: cache miss, executing bf1798d3e46e1b48
   util:build: 
   util:build: > build
-  util:build: > echo 'building'
+  util:build: > echo building
   util:build: 
   util:build: building
   

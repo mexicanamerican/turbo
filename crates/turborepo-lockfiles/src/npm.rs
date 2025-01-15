@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{any::Any, collections::HashMap};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -45,6 +45,7 @@ struct NpmPackage {
 }
 
 impl Lockfile for NpmLockfile {
+    #[tracing::instrument(skip(self, _version))]
     fn resolve_package(
         &self,
         workspace_path: &str,
@@ -78,6 +79,7 @@ impl Lockfile for NpmLockfile {
             .transpose()
     }
 
+    #[tracing::instrument(skip(self))]
     fn all_dependencies(&self, key: &str) -> Result<Option<HashMap<String, String>>, Error> {
         self.packages
             .get(key)
@@ -134,6 +136,28 @@ impl Lockfile for NpmLockfile {
 
     fn encode(&self) -> Result<Vec<u8>, crate::Error> {
         Ok(serde_json::to_vec_pretty(&self)?)
+    }
+
+    fn global_change(&self, other: &dyn Lockfile) -> bool {
+        let any_other = other as &dyn Any;
+        if let Some(other) = any_other.downcast_ref::<Self>() {
+            self.lockfile_version != other.lockfile_version
+                || self.other.get("requires") != other.other.get("requires")
+        } else {
+            true
+        }
+    }
+
+    fn turbo_version(&self) -> Option<String> {
+        let turbo_entry = self.packages.get("node_modules/turbo")?;
+        turbo_entry.version.clone()
+    }
+
+    fn human_name(&self, package: &Package) -> Option<String> {
+        let npm_package = self.packages.get(&package.key)?;
+        let version = npm_package.version.as_deref()?;
+        let name = package.key.split("node_modules/").last()?;
+        Some(format!("{name}@{version}"))
     }
 }
 
@@ -428,6 +452,7 @@ mod test {
             ]
             .into_iter()
             .collect(),
+            false,
         )?;
         assert!(closures.get("packages/a").unwrap().contains(&Package {
             key: "node_modules/eslint-plugin-turbo".into(),
@@ -435,6 +460,13 @@ mod test {
         }));
         assert!(closures.get("packages/b").unwrap().is_empty());
         assert!(closures.get("packages/c").unwrap().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_turbo_version() -> Result<(), Error> {
+        let lockfile = NpmLockfile::load(include_bytes!("../fixtures/npm-lock.json"))?;
+        assert_eq!(lockfile.turbo_version().as_deref(), Some("1.5.5"));
         Ok(())
     }
 }

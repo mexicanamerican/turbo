@@ -1,27 +1,13 @@
-import { SpyConsole } from "./spyConsole";
+import { expect } from "@jest/globals";
+import type { SpyConsole } from "./spyConsole";
 
-export default function validateLogs(
-  logs: Array<string | (() => boolean | Array<any>)>,
-  mockConsole: SpyConsole["log"] | SpyConsole["error"],
-  options: { prefix?: string } = {}
+type Matcher = ReturnType<typeof expect.stringContaining>;
+
+export function validateLogs(
+  spy: SpyConsole[keyof SpyConsole],
+  args: Array<Array<string | Matcher>>
 ) {
-  logs.forEach((log, idx) => {
-    if (typeof log === "function") {
-      const expected = log();
-      expect(mockConsole).toHaveBeenNthCalledWith(
-        idx + 1,
-        ...(Array.isArray(expected) ? expected : [expected])
-      );
-    } else {
-      if (options.prefix) {
-        expect(mockConsole).toHaveBeenNthCalledWith(
-          idx + 1,
-          options.prefix,
-          log
-        );
-      } else {
-        expect(mockConsole).toHaveBeenNthCalledWith(idx + 1, log);
-      }
-    }
+  args.forEach((arg, idx) => {
+    expect(spy).toHaveBeenNthCalledWith(idx + 1, ...arg);
   });
 }

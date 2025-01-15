@@ -1,4 +1,4 @@
-import chalk from "chalk";
+import { bold, green, red, underline, yellow } from "picocolors";
 import gradient from "gradient-string";
 
 const INDENTATION = 2;
@@ -17,24 +17,25 @@ export class Logger {
     this.step = 1;
   }
 
-  logger(...args: any[]) {
+  logger(...args: Array<unknown>) {
     if (this.interactive) {
+      // eslint-disable-next-line no-console -- logger
       console.log(...args);
     }
   }
 
-  indented(level: number, ...args: any[]) {
+  indented(level: number, ...args: Array<unknown>) {
     this.logger(" ".repeat(INDENTATION * level), ...args);
   }
 
   header(title: string) {
     this.blankLine();
-    this.logger(chalk.bold(title));
+    this.logger(bold(title));
   }
 
   installerFrames() {
     const prefix = `${" ".repeat(INDENTATION)} - ${
-      this.dry ? chalk.yellow("SKIPPED | ") : chalk.green("OK | ")
+      this.dry ? yellow("SKIPPED | ") : green("OK | ")
     }`;
     return [`${prefix}   `, `${prefix}>  `, `${prefix}>> `, `${prefix}>>>`];
   }
@@ -45,30 +46,30 @@ export class Logger {
   }
 
   hero() {
-    this.logger(chalk.bold(this.gradient(`\n>>> TURBOREPO\n`)));
+    this.logger(bold(this.gradient(`\n>>> TURBOREPO\n`)));
   }
 
-  info(...args: any[]) {
+  info(...args: Array<unknown>) {
     this.logger(...args);
   }
 
   mainStep(title: string) {
     this.blankLine();
-    this.logger(`${this.step}. ${chalk.underline(title)}`);
+    this.logger(`${this.step}. ${underline(title)}`);
     this.step += 1;
   }
 
-  subStep(...args: any[]) {
+  subStep(...args: Array<unknown>) {
     this.logger(
       " ".repeat(INDENTATION),
       `-`,
-      this.dry ? chalk.yellow("SKIPPED |") : chalk.green("OK |"),
+      this.dry ? yellow("SKIPPED |") : green("OK |"),
       ...args
     );
   }
 
-  subStepFailure(...args: any[]) {
-    this.logger(" ".repeat(INDENTATION), `-`, chalk.red("ERROR |"), ...args);
+  subStepFailure(...args: Array<unknown>) {
+    this.logger(" ".repeat(INDENTATION), `-`, red("ERROR |"), ...args);
   }
 
   rootHeader() {
@@ -76,11 +77,11 @@ export class Logger {
     this.indented(2, "Root:");
   }
 
-  rootStep(...args: any[]) {
+  rootStep(...args: Array<unknown>) {
     this.logger(
       " ".repeat(INDENTATION * 3),
       `-`,
-      this.dry ? chalk.yellow("SKIPPED |") : chalk.green("OK |"),
+      this.dry ? yellow("SKIPPED |") : green("OK |"),
       ...args
     );
   }
@@ -90,11 +91,11 @@ export class Logger {
     this.indented(2, "Workspaces:");
   }
 
-  workspaceStep(...args: any[]) {
+  workspaceStep(...args: Array<unknown>) {
     this.logger(
       " ".repeat(INDENTATION * 3),
       `-`,
-      this.dry ? chalk.yellow("SKIPPED |") : chalk.green("OK |"),
+      this.dry ? yellow("SKIPPED |") : green("OK |"),
       ...args
     );
   }
@@ -103,7 +104,8 @@ export class Logger {
     this.logger();
   }
 
-  error(...args: any[]) {
+  error(...args: Array<unknown>) {
+    // eslint-disable-next-line no-console -- logger
     console.error(...args);
   }
 }

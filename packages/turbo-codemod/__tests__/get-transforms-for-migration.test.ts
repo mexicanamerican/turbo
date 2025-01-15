@@ -1,8 +1,9 @@
-import getCodemodsForMigration from "../src/commands/migrate/steps/getTransformsForMigration";
+import { describe, it, expect } from "@jest/globals";
+import { getTransformsForMigration } from "../src/commands/migrate/steps/getTransformsForMigration";
 
 describe("get-transforms-for-migration", () => {
-  test("ordering", () => {
-    let results = getCodemodsForMigration({
+  it("ordering", () => {
+    const results = getTransformsForMigration({
       fromVersion: "1.0.0",
       toVersion: "1.10.0",
     });

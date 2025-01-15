@@ -1,7 +1,6 @@
 use std::{
     borrow::Borrow,
-    fmt,
-    io::{self, Write},
+    fmt, io,
     ops::Deref,
     path::{Path, PathBuf},
 };
@@ -39,8 +38,9 @@ impl Deref for AbsoluteSystemPathBuf {
 
 impl AbsoluteSystemPathBuf {
     /// Create a new AbsoluteSystemPathBuf from `unchecked_path`.
-    /// Confirms that `unchecked_path` is absolute and converts it to a system
-    /// path.
+    /// Confirms that `unchecked_path` is absolute. Does *not* convert
+    /// to system path, since that is generally undecidable (see module
+    /// documentation)
     ///
     /// # Arguments
     ///
@@ -75,6 +75,8 @@ impl AbsoluteSystemPathBuf {
         Ok(AbsoluteSystemPathBuf(unchecked_path.into()))
     }
 
+    /// Takes in a system path of unknown type. If it's absolute, returns the
+    /// path, If it's relative, appends it to the base after cleaning it.
     pub fn from_unknown(base: &AbsoluteSystemPath, unknown: impl Into<Utf8PathBuf>) -> Self {
         // we have an absolute system path and an unknown kind of system path.
         let unknown: Utf8PathBuf = unknown.into();
@@ -98,6 +100,7 @@ impl AbsoluteSystemPathBuf {
     }
 
     pub fn cwd() -> Result<Self, PathError> {
+        // TODO(errors): Unwrap current_dir()
         Ok(Self(Utf8PathBuf::try_from(std::env::current_dir()?)?))
     }
 
@@ -185,12 +188,6 @@ impl AbsoluteSystemPathBuf {
         Ok(self.0.symlink_metadata()?.permissions().readonly())
     }
 
-    pub fn create_with_contents<B: AsRef<[u8]>>(&self, contents: B) -> Result<(), io::Error> {
-        let mut f = fs::File::create(self.0.as_path())?;
-        f.write_all(contents.as_ref())?;
-        Ok(())
-    }
-
     pub fn as_str(&self) -> &str {
         self.0.as_str()
     }
@@ -199,22 +196,8 @@ impl AbsoluteSystemPathBuf {
         self.0.file_name()
     }
 
-    pub fn exists(&self) -> bool {
-        self.0.exists()
-    }
-
-    pub fn try_exists(&self) -> Result<bool, PathError> {
-        // try_exists is an experimental API and not yet in fs_err
-        Ok(std::fs::try_exists(&self.0)?)
-    }
-
     pub fn extension(&self) -> Option<&str> {
         self.0.extension()
-    }
-
-    pub fn to_realpath(&self) -> Result<Self, PathError> {
-        let realpath = dunce::canonicalize(&self.0)?;
-        Ok(Self(Utf8PathBuf::try_from(realpath)?))
     }
 }
 
@@ -222,11 +205,7 @@ impl TryFrom<PathBuf> for AbsoluteSystemPathBuf {
     type Error = PathError;
 
     fn try_from(path: PathBuf) -> Result<Self, Self::Error> {
-        let path_str = path
-            .to_str()
-            .ok_or_else(|| PathError::InvalidUnicode(path.to_string_lossy().to_string()))?;
-
-        Self::new(Utf8PathBuf::from(path_str))
+        Self::new(Utf8PathBuf::try_from(path)?)
     }
 }
 
@@ -234,11 +213,16 @@ impl TryFrom<&Path> for AbsoluteSystemPathBuf {
     type Error = PathError;
 
     fn try_from(path: &Path) -> Result<Self, Self::Error> {
-        let path_str = path
-            .to_str()
-            .ok_or_else(|| PathError::InvalidUnicode(path.to_string_lossy().to_string()))?;
+        let utf8_path: &Utf8Path = path.try_into()?;
+        Self::new(utf8_path.to_owned())
+    }
+}
 
-        Self::new(Utf8PathBuf::from(path_str))
+impl TryFrom<&str> for AbsoluteSystemPathBuf {
+    type Error = PathError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::new(Utf8PathBuf::from(value))
     }
 }
 
@@ -285,8 +269,7 @@ mod tests {
         assert_eq!(
             AbsoluteSystemPathBuf::new("/some/dir")
                 .unwrap()
-                .join_unix_path(tail)
-                .unwrap(),
+                .join_unix_path(tail),
             AbsoluteSystemPathBuf::new("/some/other").unwrap(),
         );
     }
@@ -313,8 +296,7 @@ mod tests {
         assert_eq!(
             AbsoluteSystemPathBuf::new("C:\\some\\dir")
                 .unwrap()
-                .join_unix_path(&tail)
-                .unwrap(),
+                .join_unix_path(&tail),
             AbsoluteSystemPathBuf::new("C:\\some\\other").unwrap(),
         );
     }

@@ -1,39 +1,39 @@
-use std::borrow::Borrow;
+use std::time::Duration;
 
-use anyhow::Result;
-use sha2::{Digest, Sha256};
-use tokio::sync::OnceCell;
-use turbopath::AbsoluteSystemPathBuf;
-use turborepo_api_client::APIClient;
-use turborepo_ui::UI;
+use turbopath::{AbsoluteSystemPath, AbsoluteSystemPathBuf};
+use turborepo_api_client::{APIAuth, APIClient};
+use turborepo_auth::{TURBO_TOKEN_DIR, TURBO_TOKEN_FILE};
+use turborepo_dirs::config_dir;
+use turborepo_ui::ColorConfig;
 
 use crate::{
-    config::{
-        default_user_config_path, get_repo_config_path, ClientConfig, ClientConfigLoader,
-        RepoConfig, RepoConfigLoader, UserConfig, UserConfigLoader,
-    },
+    cli,
+    config::{ConfigurationOptions, Error as ConfigError, TurborepoConfigBuilder},
+    opts::Opts,
     Args,
 };
 
 pub(crate) mod bin;
+pub(crate) mod config;
 pub(crate) mod daemon;
 pub(crate) mod generate;
 pub(crate) mod info;
 pub(crate) mod link;
 pub(crate) mod login;
 pub(crate) mod logout;
+pub(crate) mod ls;
 pub(crate) mod prune;
+pub(crate) mod query;
 pub(crate) mod run;
+pub(crate) mod scan;
+pub(crate) mod telemetry;
 pub(crate) mod unlink;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CommandBase {
     pub repo_root: AbsoluteSystemPathBuf,
-    pub ui: UI,
-    user_config: OnceCell<UserConfig>,
-    repo_config: OnceCell<RepoConfig>,
-    client_config: OnceCell<ClientConfig>,
-    args: Args,
+    pub color_config: ColorConfig,
+    pub opts: Opts,
     version: &'static str,
 }
 
@@ -42,173 +42,153 @@ impl CommandBase {
         args: Args,
         repo_root: AbsoluteSystemPathBuf,
         version: &'static str,
-        ui: UI,
-    ) -> Result<Self> {
+        color_config: ColorConfig,
+    ) -> Result<Self, cli::Error> {
+        let config = Self::load_config(&repo_root, &args)?;
+        let opts = Opts::new(&repo_root, &args, config)?;
+
         Ok(Self {
             repo_root,
-            ui,
-            args,
-            repo_config: OnceCell::new(),
-            user_config: OnceCell::new(),
-            client_config: OnceCell::new(),
+            color_config,
+            opts,
             version,
         })
     }
 
-    fn create_repo_config(&self) -> Result<()> {
-        let repo_config_path = get_repo_config_path(self.repo_root.borrow());
-
-        let repo_config = RepoConfigLoader::new(repo_config_path)
-            .with_api(self.args.api.clone())
-            .with_login(self.args.login.clone())
-            .with_team_slug(self.args.team.clone())
-            .load()?;
-
-        self.repo_config.set(repo_config)?;
-
-        Ok(())
-    }
-
-    // NOTE: This deletes the repo config file. It does *not* remove the
-    // `RepoConfig` struct from `CommandBase`. This is fine because we
-    // currently do not have any commands that delete the repo config file
-    // and then attempt to read from it.
-    pub fn delete_repo_config_file(&mut self) -> Result<()> {
-        let repo_config_path = get_repo_config_path(self.repo_root.borrow());
-        if repo_config_path.exists() {
-            std::fs::remove_file(repo_config_path)?;
+    pub fn from_opts(
+        opts: Opts,
+        repo_root: AbsoluteSystemPathBuf,
+        version: &'static str,
+        color_config: ColorConfig,
+    ) -> Self {
+        Self {
+            repo_root,
+            color_config,
+            version,
+            opts,
         }
-        Ok(())
     }
 
-    fn create_user_config(&self) -> Result<()> {
-        let user_config = UserConfigLoader::new(default_user_config_path()?)
-            .with_token(self.args.token.clone())
-            .load()?;
-        self.user_config.set(user_config)?;
-
-        Ok(())
+    pub fn load_config(
+        repo_root: &AbsoluteSystemPath,
+        args: &Args,
+    ) -> Result<ConfigurationOptions, ConfigError> {
+        TurborepoConfigBuilder::new(repo_root)
+            // The below should be deprecated and removed.
+            .with_api_url(args.api.clone())
+            .with_login_url(args.login.clone())
+            .with_team_slug(args.team.clone())
+            .with_token(args.token.clone())
+            .with_timeout(args.remote_cache_timeout)
+            .with_preflight(args.preflight.then_some(true))
+            .with_ui(args.ui)
+            .with_allow_no_package_manager(
+                args.dangerously_disable_package_manager_check
+                    .then_some(true),
+            )
+            .with_daemon(args.run_args().and_then(|args| args.daemon()))
+            .with_env_mode(
+                args.execution_args()
+                    .and_then(|execution_args| execution_args.env_mode),
+            )
+            .with_cache_dir(
+                args.execution_args()
+                    .and_then(|execution_args| execution_args.cache_dir.clone()),
+            )
+            .with_root_turbo_json_path(
+                args.root_turbo_json
+                    .clone()
+                    .map(AbsoluteSystemPathBuf::from_cwd)
+                    .transpose()?,
+            )
+            .with_force(
+                args.run_args()
+                    .and_then(|args| args.force.map(|value| value.unwrap_or(true))),
+            )
+            .with_log_order(args.execution_args().and_then(|args| args.log_order))
+            .with_remote_only(args.run_args().and_then(|args| args.remote_only()))
+            .with_remote_cache_read_only(
+                args.run_args()
+                    .and_then(|args| args.remote_cache_read_only()),
+            )
+            .with_cache(
+                args.run_args()
+                    .and_then(|args| args.cache.as_deref())
+                    .map(|cache| cache.parse())
+                    .transpose()?,
+            )
+            .with_run_summary(args.run_args().and_then(|args| args.summarize()))
+            .with_allow_no_turbo_json(args.allow_no_turbo_json.then_some(true))
+            .build()
     }
 
-    fn create_client_config(&self) -> Result<()> {
-        let client_config = ClientConfigLoader::new()
-            .with_remote_cache_timeout(self.args.remote_cache_timeout)
-            .load()?;
-        self.client_config.set(client_config)?;
-
-        Ok(())
+    pub fn opts(&self) -> &Opts {
+        &self.opts
     }
 
-    pub fn repo_config_mut(&mut self) -> Result<&mut RepoConfig> {
-        if self.repo_config.get().is_none() {
-            self.create_repo_config()?;
-        }
+    // Getting all of the paths.
+    fn global_config_path(&self) -> Result<AbsoluteSystemPathBuf, ConfigError> {
+        let config_dir = config_dir()?.ok_or(ConfigError::NoGlobalConfigPath)?;
 
-        Ok(self.repo_config.get_mut().unwrap())
+        Ok(config_dir.join_components(&[TURBO_TOKEN_DIR, TURBO_TOKEN_FILE]))
+    }
+    fn local_config_path(&self) -> AbsoluteSystemPathBuf {
+        self.repo_root.join_components(&[".turbo", "config.json"])
+    }
+    fn root_package_json_path(&self) -> AbsoluteSystemPathBuf {
+        self.repo_root.join_component("package.json")
+    }
+    fn root_turbo_json_path(&self) -> AbsoluteSystemPathBuf {
+        self.repo_root.join_component("turbo.json")
     }
 
-    pub fn repo_config(&self) -> Result<&RepoConfig> {
-        if self.repo_config.get().is_none() {
-            self.create_repo_config()?;
-        }
+    pub fn api_auth(&self) -> Result<Option<APIAuth>, ConfigError> {
+        let team_id = self.opts.api_client_opts.team_id.as_ref();
+        let team_slug = self.opts.api_client_opts.team_slug.as_ref();
 
-        Ok(self.repo_config.get().unwrap())
+        let Some(token) = &self.opts.api_client_opts.token else {
+            return Ok(None);
+        };
+
+        Ok(Some(APIAuth {
+            team_id: team_id.map(|s| s.to_string()),
+            token: token.to_string(),
+            team_slug: team_slug.map(|s| s.to_string()),
+        }))
     }
 
-    pub fn user_config_mut(&mut self) -> Result<&mut UserConfig> {
-        if self.user_config.get().is_none() {
-            self.create_user_config()?;
-        }
+    pub fn api_client(&self) -> Result<APIClient, ConfigError> {
+        let timeout = self.opts.api_client_opts.timeout;
+        let upload_timeout = self.opts.api_client_opts.upload_timeout;
 
-        Ok(self.user_config.get_mut().unwrap())
-    }
-
-    pub fn user_config(&self) -> Result<&UserConfig> {
-        if self.user_config.get().is_none() {
-            self.create_user_config()?;
-        }
-
-        Ok(self.user_config.get().unwrap())
-    }
-
-    pub fn client_config(&self) -> Result<&ClientConfig> {
-        if self.client_config.get().is_none() {
-            self.create_client_config()?;
-        }
-
-        Ok(self.client_config.get().unwrap())
-    }
-
-    pub fn args(&self) -> &Args {
-        &self.args
-    }
-
-    pub fn api_client(&self) -> Result<APIClient> {
-        let repo_config = self.repo_config()?;
-        let client_config = self.client_config()?;
-        let args = self.args();
-
-        let api_url = repo_config.api_url();
-        let timeout = client_config.remote_cache_timeout();
-        Ok(APIClient::new(
-            api_url,
-            timeout,
+        APIClient::new(
+            &self.opts.api_client_opts.api_url,
+            if timeout > 0 {
+                Some(Duration::from_secs(timeout))
+            } else {
+                None
+            },
+            if upload_timeout > 0 {
+                Some(Duration::from_secs(upload_timeout))
+            } else {
+                None
+            },
             self.version,
-            args.preflight,
-        )?)
+            self.opts.api_client_opts.preflight,
+        )
+        .map_err(ConfigError::ApiClient)
     }
 
-    pub fn daemon_file_root(&self) -> AbsoluteSystemPathBuf {
-        AbsoluteSystemPathBuf::new(std::env::temp_dir().to_str().expect("UTF-8 path"))
-            .expect("temp dir is valid")
-            .join_component("turbod")
-            .join_component(self.repo_hash().as_str())
+    /// Current working directory for the turbo command
+    pub fn cwd(&self) -> &AbsoluteSystemPath {
+        // Earlier in execution
+        // self.cli_args.cwd = Some(repo_root.as_path())
+        // happens.
+        // We directly use repo_root to avoid converting back to absolute system path
+        &self.repo_root
     }
 
-    fn repo_hash(&self) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(self.repo_root.as_bytes());
-        hex::encode(&hasher.finalize()[..8])
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use test_case::test_case;
-    use turbopath::AbsoluteSystemPathBuf;
-    use turborepo_ui::UI;
-
-    use crate::get_version;
-
-    #[cfg(not(target_os = "windows"))]
-    #[test_case("/tmp/turborepo", "6e0cfa616f75a61c"; "basic example")]
-    fn test_repo_hash(path: &str, expected_hash: &str) {
-        use super::CommandBase;
-        use crate::Args;
-
-        let args = Args::default();
-        let repo_root = AbsoluteSystemPathBuf::new(path).unwrap();
-        let command_base = CommandBase::new(args, repo_root, get_version(), UI::new(true)).unwrap();
-
-        let hash = command_base.repo_hash();
-
-        assert_eq!(hash, expected_hash);
-        assert_eq!(hash.len(), 16);
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test_case("C:\\\\tmp\\turborepo", "0103736e6883e35f"; "basic example")]
-    fn test_repo_hash_win(path: &str, expected_hash: &str) {
-        use super::CommandBase;
-        use crate::Args;
-
-        let args = Args::default();
-        let repo_root = AbsoluteSystemPathBuf::new(path).unwrap();
-        let command_base = CommandBase::new(args, repo_root, get_version(), UI::new(true)).unwrap();
-
-        let hash = command_base.repo_hash();
-
-        assert_eq!(hash, expected_hash);
-        assert_eq!(hash.len(), 16);
+    pub fn version(&self) -> &'static str {
+        self.version
     }
 }

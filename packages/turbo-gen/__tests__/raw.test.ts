@@ -1,3 +1,4 @@
+import { describe, it, expect, jest } from "@jest/globals";
 import { raw } from "../src/commands/raw";
 import * as run from "../src/commands/run";
 import * as workspace from "../src/commands/workspace";
@@ -14,7 +15,7 @@ describe("raw", () => {
     {
       command: "run",
       options: {
-        "generator-name": "thisOne",
+        generator_name: "thisOne",
         config: "../config.ts",
         root: "../",
       },
@@ -24,7 +25,7 @@ describe("raw", () => {
     {
       command: "run",
       options: {
-        "generator-name": "thisOne",
+        generator_name: "thisOne",
         config: "../config.ts",
         root: "../",
         args: ["cool name", "packages/cool-name"],
@@ -44,6 +45,7 @@ describe("raw", () => {
       calledWith: {
         empty: true,
         copy: false,
+        showAllDependencies: false,
       },
     },
     {
@@ -55,17 +57,20 @@ describe("raw", () => {
       calledWith: {
         empty: false,
         copy: true,
+        showAllDependencies: false,
       },
     },
     {
       command: "workspace",
       options: {
         copy: "some-workspace",
+        show_all_dependencies: false,
       },
       target: "workspace",
       calledWith: {
         copy: "some-workspace",
         empty: false,
+        showAllDependencies: false,
       },
     },
     {
@@ -74,7 +79,7 @@ describe("raw", () => {
         type: "package",
         name: "cool-name",
         copy: true,
-        "show-all-dependencies": true,
+        show_all_dependencies: true,
       },
       target: "workspace",
       calledWith: {
@@ -85,6 +90,29 @@ describe("raw", () => {
         showAllDependencies: true,
       },
     },
+    {
+      command: "workspace",
+      options: {
+        type: "package",
+        name: "cool-name",
+        empty: true,
+        copy: "tailwind-css",
+        destination: "../../",
+        show_all_dependencies: true,
+        example_path: "packages/cool-name",
+      },
+      target: "workspace",
+      calledWith: {
+        type: "package",
+        name: "cool-name",
+        empty: false,
+        copy: "tailwind-css",
+        destination: "../../",
+        showAllDependencies: true,
+        examplePath: "packages/cool-name",
+      },
+    },
+    // different casing
     {
       command: "workspace",
       options: {
@@ -108,7 +136,7 @@ describe("raw", () => {
       },
     },
   ];
-  test.each(testMatrix)(
+  it.each(testMatrix)(
     "$command and $options calls $target with $calledWith",
     async ({ command, options, target, calledWith }) => {
       // mock generation functions, we only care if they are called,
@@ -123,7 +151,7 @@ describe("raw", () => {
 
       if (target === "run") {
         expect(mockRun).toHaveBeenCalledWith(
-          options["generator-name"],
+          options.generator_name,
           calledWith
         );
         expect(mockWorkspace).not.toHaveBeenCalled();

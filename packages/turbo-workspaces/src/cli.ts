@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
-import chalk from "chalk";
+import { red } from "picocolors";
 import { Command } from "commander";
-
-import { summary, convert } from "./commands";
+import { logger } from "@turbo/utils";
 import cliPkg from "../package.json";
+import { summary, convert } from "./commands";
 import { ConvertError } from "./errors";
 
 const workspacesCli = new Command();
@@ -25,6 +25,11 @@ workspacesCli
     "Do not run a package manager install after conversion",
     false
   )
+  .option(
+    "--ignore-unchanged-package-manager",
+    "Prevent script failure if the package manager is unchanged",
+    false
+  )
   .option("--dry", "Dry run (no changes are made to files)", false)
   .option(
     "--force",
@@ -41,13 +46,13 @@ workspacesCli
   .action(summary);
 
 workspacesCli.parseAsync().catch((error) => {
-  console.log();
+  logger.log();
   if (error instanceof ConvertError) {
-    console.log(chalk.red(error.message));
+    logger.log(red(error.message));
   } else {
-    console.log(chalk.red("Unexpected error. Please report it as a bug:"));
-    console.log(error.message);
+    logger.log(red("Unexpected error. Please report it as a bug:"));
+    logger.log(error);
   }
-  console.log();
+  logger.log();
   process.exit(1);
 });

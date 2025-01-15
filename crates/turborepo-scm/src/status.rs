@@ -9,6 +9,7 @@ use turbopath::{AbsoluteSystemPath, RelativeUnixPathBuf};
 use crate::{package_deps::GitHashes, wait_for_success, Error, Git};
 
 impl Git {
+    #[tracing::instrument(skip(self, root_path, hashes))]
     pub(crate) fn append_git_status(
         &self,
         root_path: &AbsoluteSystemPath,
@@ -24,6 +25,7 @@ impl Git {
                 "--",
                 ".",
             ])
+            .env("GIT_OPTIONAL_LOCKS", "0")
             .current_dir(root_path)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -90,9 +92,9 @@ fn nom_parse_status(i: &[u8]) -> nom::IResult<&[u8], StatusEntry<'_>> {
     let (i, x) = nom::bytes::complete::take(1usize)(i)?;
     let (i, y) = nom::bytes::complete::take(1usize)(i)?;
     let (i, _) = nom::character::complete::space1(i)?;
-    let (i, filename) = nom::bytes::complete::is_not(" \0")(i)?;
+    let (i, filename) = nom::bytes::complete::is_not("\0")(i)?;
     // We explicitly support a missing terminator
-    let (i, _) = nom::combinator::opt(nom::bytes::complete::tag(&[b'\0']))(i)?;
+    let (i, _) = nom::combinator::opt(nom::bytes::complete::tag(b"\0"))(i)?;
     Ok((
         i,
         StatusEntry {
@@ -124,6 +126,11 @@ mod tests {
             ),
             ("M  package.json\0", "", ("package.json", false)),
             ("A  some-pkg/some-file\0", "some-pkg", ("some-file", false)),
+            (
+                "M  some-pkg/file with spaces\0",
+                "some-pkg",
+                ("file with spaces", false),
+            ),
         ];
         for (input, prefix, (expected_filename, expect_delete)) in tests {
             let prefix = RelativeUnixPathBuf::new(*prefix).unwrap();

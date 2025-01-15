@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{any::Any, str::FromStr};
 
 use serde::Deserialize;
 
@@ -19,6 +19,7 @@ pub enum Error {
     NonUTF8(#[from] std::str::Utf8Error),
 }
 
+#[derive(Debug)]
 pub struct Yarn1Lockfile {
     inner: Map<String, Entry>,
 }
@@ -54,6 +55,7 @@ impl FromStr for Yarn1Lockfile {
 }
 
 impl Lockfile for Yarn1Lockfile {
+    #[tracing::instrument(skip(self, _workspace_path))]
     fn resolve_package(
         &self,
         _workspace_path: &str,
@@ -72,6 +74,7 @@ impl Lockfile for Yarn1Lockfile {
         Ok(None)
     }
 
+    #[tracing::instrument(skip(self))]
     fn all_dependencies(
         &self,
         key: &str,
@@ -106,6 +109,30 @@ impl Lockfile for Yarn1Lockfile {
 
     fn encode(&self) -> Result<Vec<u8>, crate::Error> {
         Ok(self.to_string().into_bytes())
+    }
+
+    fn global_change(&self, other: &dyn Lockfile) -> bool {
+        let any_other = other as &dyn Any;
+        // Downcast returns none if the concrete type doesn't match
+        // if the types don't match then we changed package managers
+        any_other.downcast_ref::<Self>().is_none()
+    }
+
+    fn turbo_version(&self) -> Option<String> {
+        // Yarn lockfiles can have multiple descriptors as a key e.g. turbo@latest,
+        // turbo@1.2.3 We just check if the first descriptor is for turbo and
+        // return that. Using multiple versions of turbo in a single project is
+        // not supported.
+        let key = self.inner.keys().find(|key| key.starts_with("turbo@"))?;
+        let entry = self.inner.get(key)?;
+        Some(entry.version.clone())
+    }
+
+    fn human_name(&self, package: &crate::Package) -> Option<String> {
+        let entry = self.inner.get(&package.key)?;
+        let name = entry.name.as_deref()?;
+        let version = &entry.version;
+        Some(format!("{name}@{version}"))
     }
 }
 
@@ -143,9 +170,11 @@ mod test {
 
     const MINIMAL: &str = include_str!("../../fixtures/yarn1.lock");
     const FULL: &str = include_str!("../../fixtures/yarn1full.lock");
+    const GH_8849: &str = include_str!("../../fixtures/gh_8849.lock");
 
     #[test_case(MINIMAL ; "minimal lockfile")]
     #[test_case(FULL ; "full lockfile")]
+    #[test_case(GH_8849 ; "gh 8849")]
     fn test_roundtrip(input: &str) {
         let lockfile = Yarn1Lockfile::from_str(input).unwrap();
         assert_eq!(input, lockfile.to_string());
@@ -165,5 +194,12 @@ mod test {
                 key
             );
         }
+    }
+
+    #[test_case(MINIMAL, "1.9.3" ; "minimal lockfile")]
+    #[test_case(FULL, "1.4.6" ; "full lockfile")]
+    fn test_turbo_version(lockfile: &str, expected: &str) {
+        let lockfile = Yarn1Lockfile::from_str(lockfile).unwrap();
+        assert_eq!(lockfile.turbo_version().as_deref(), Some(expected));
     }
 }
